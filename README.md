@@ -1,5 +1,7 @@
 # claude-cat
 
+NOTE: WIP, the actual 1-bit cat is an ugly placeholder at the moment.
+
 A 1-bit pixel art cat that lives in your terminal and reacts to [Claude Code](https://docs.anthropic.com/en/docs/claude-code)'s activity in real time.
 
 ```
