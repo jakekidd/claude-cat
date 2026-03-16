@@ -1,0 +1,8 @@
+{
+  "name": "claude-cat",
+  "version": "0.1.0",
+  "scripts": {
+    "start": "bun cat.ts",
+    "demo": "bun cat.ts --demo"
+  }
+}
