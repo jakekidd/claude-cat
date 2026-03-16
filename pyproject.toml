@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "claude-cat"
+version = "0.1.0"
+description = "A 1-bit pixel art cat companion for Claude Code that reacts to your AI's activity in real time"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.9"
+keywords = ["claude", "claude-code", "terminal", "tui", "cat", "pixel-art"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Utilities",
+]
+
+[project.urls]
+Homepage = "https://github.com/jakekidd/claude-cat"
+Repository = "https://github.com/jakekidd/claude-cat"
+
+[project.scripts]
+claude-cat = "claude_cat.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
