@@ -1,29 +1,164 @@
-#!/usr/bin/env bun
-// claude-cat -- a 1-bit companion cat that reacts to Claude Code
-//
-// bun cat.ts          watch mode (run in a side terminal)
-// bun cat.ts --hook   hook mode (called by Claude Code via stdin)
-// bun cat.ts --demo   cycle through all expressions
+#!/usr/bin/env node
+// claude-cat -- a 1-bit companion cat for Claude Code
 
-import { watch, existsSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  readFileSync,
+  writeFileSync,
+  statSync,
+  mkdirSync,
+} from "node:fs";
+import { join } from "node:path";
+import { homedir, tmpdir } from "node:os";
 
-const STATE_FILE = "/tmp/claude-cat.json";
+const VERSION = "0.1.0";
+const STATE_FILE = join(tmpdir(), "claude-cat.json");
+const HOOK_EVENTS = [
+  "PostToolUse",
+  "PostToolUseFailure",
+  "Stop",
+  "SubagentStart",
+  "SubagentStop",
+];
+
+// ── CLI ─────────────────────────────────────────────────────────────
+const args = process.argv.slice(2);
+const cmd = args[0] ?? "";
+
+if (cmd === "--hook" || cmd === "hook") hookMode();
+else if (cmd === "--demo" || cmd === "demo") demoMode();
+else if (cmd === "install") installCmd();
+else if (cmd === "uninstall") uninstallCmd();
+else if (cmd === "--help" || cmd === "-h" || cmd === "help") helpCmd();
+else if (cmd === "--version" || cmd === "-v") console.log(VERSION);
+else if (cmd === "" || cmd === "--watch") watchMode();
+else {
+  console.error(`Unknown command: ${cmd}`);
+  helpCmd();
+  process.exit(1);
+}
+
+// ── Help ────────────────────────────────────────────────────────────
+function helpCmd() {
+  console.log(`claude-cat v${VERSION}
+A 1-bit companion cat for Claude Code
+
+Usage:
+  claude-cat              Start the cat (run in a side terminal)
+  claude-cat install      Set up Claude Code hooks
+  claude-cat uninstall    Remove Claude Code hooks
+  claude-cat --demo       Preview all expressions
+  claude-cat --version    Show version`);
+}
 
 // ── Hook mode ───────────────────────────────────────────────────────
-if (process.argv.includes("--hook")) {
-  try {
-    const text = await Bun.stdin.text();
-    const input = JSON.parse(text);
-    writeFileSync(
-      STATE_FILE,
-      JSON.stringify({
-        event: input.hook_event_name ?? "unknown",
-        tool: input.tool_name ?? "",
-        ts: Date.now(),
-      })
+function hookMode() {
+  let data = "";
+  process.stdin.setEncoding("utf-8");
+  process.stdin.on("data", (chunk: string) => {
+    data += chunk;
+  });
+  process.stdin.on("end", () => {
+    try {
+      const input = JSON.parse(data);
+      writeFileSync(
+        STATE_FILE,
+        JSON.stringify({
+          event: input.hook_event_name ?? "unknown",
+          tool: input.tool_name ?? "",
+          ts: Date.now(),
+        })
+      );
+    } catch {}
+    process.exit(0);
+  });
+}
+
+// ── Install ─────────────────────────────────────────────────────────
+function installCmd() {
+  const claudeDir = join(homedir(), ".claude");
+  const settingsPath = join(claudeDir, "settings.json");
+
+  if (!existsSync(claudeDir)) mkdirSync(claudeDir, { recursive: true });
+
+  let settings: Record<string, any> = {};
+  if (existsSync(settingsPath)) {
+    try {
+      settings = JSON.parse(readFileSync(settingsPath, "utf-8"));
+    } catch {}
+  }
+
+  if (!settings.hooks) settings.hooks = {};
+
+  let added = 0;
+  for (const event of HOOK_EVENTS) {
+    if (!settings.hooks[event]) settings.hooks[event] = [];
+    const exists = settings.hooks[event].some((rule: any) =>
+      rule.hooks?.some((h: any) => h.command?.includes("claude-cat"))
     );
-  } catch {}
-  process.exit(0);
+    if (!exists) {
+      settings.hooks[event].push({
+        matcher: "",
+        hooks: [
+          {
+            type: "command",
+            command: "claude-cat --hook",
+            async: true,
+            timeout: 5,
+          },
+        ],
+      });
+      added++;
+    }
+  }
+
+  writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n");
+
+  if (added > 0) {
+    console.log(`Installed ${added} hook(s) in ${settingsPath}`);
+    console.log("Run claude-cat in a side terminal to see your cat.");
+  } else {
+    console.log("Hooks already installed.");
+  }
+}
+
+// ── Uninstall ───────────────────────────────────────────────────────
+function uninstallCmd() {
+  const settingsPath = join(homedir(), ".claude", "settings.json");
+
+  if (!existsSync(settingsPath)) {
+    console.log("No settings found.");
+    return;
+  }
+
+  let settings: Record<string, any> = {};
+  try {
+    settings = JSON.parse(readFileSync(settingsPath, "utf-8"));
+  } catch {
+    return;
+  }
+
+  if (!settings.hooks) {
+    console.log("No hooks found.");
+    return;
+  }
+
+  let removed = 0;
+  for (const event of HOOK_EVENTS) {
+    if (!settings.hooks[event]) continue;
+    const before = settings.hooks[event].length;
+    settings.hooks[event] = settings.hooks[event].filter(
+      (rule: any) =>
+        !rule.hooks?.some((h: any) => h.command?.includes("claude-cat"))
+    );
+    removed += before - settings.hooks[event].length;
+    if (settings.hooks[event].length === 0) delete settings.hooks[event];
+  }
+
+  if (Object.keys(settings.hooks).length === 0) delete settings.hooks;
+
+  writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n");
+  console.log(`Removed ${removed} hook(s) from ${settingsPath}`);
 }
 
 // ── Types ───────────────────────────────────────────────────────────
@@ -38,8 +173,8 @@ type Mood =
 
 // ── Sprites ─────────────────────────────────────────────────────────
 // Pixel bitmaps: '#' = filled, '.' = empty
-// Row count must be even. Each pair -> one char row via half-blocks.
-// ▀ = top filled  ▄ = bottom filled  █ = both  ' ' = neither
+// Row count must be even. Pairs of rows -> one character row.
+// Encoding: top+bot -> (1,1)=█  (1,0)=▀  (0,1)=▄  (0,0)=' '
 const sprites: Record<Mood, string[]> = {
   idle: [
     "..##.....##..",
@@ -189,8 +324,9 @@ let mood: Mood = "idle";
 let bubble = "";
 let blinking = false;
 let lastStateRaw = "";
-let bubbleTimer: Timer | null = null;
-let sleepTimer: Timer | null = null;
+let lastMtime = 0;
+let bubbleTimer: ReturnType<typeof setTimeout> | null = null;
+let sleepTimer: ReturnType<typeof setTimeout> | null = null;
 
 // ── Render ──────────────────────────────────────────────────────────
 function render() {
@@ -198,7 +334,7 @@ function render() {
   const cat = toBlocks(sprites[m]);
   const catW = cat[0]?.length ?? 13;
 
-  let out = "\x1b[H\x1b[?25l"; // cursor home + hide cursor
+  let out = "\x1b[H\x1b[?25l";
 
   if (bubble) {
     const inner = ` ${bubble} `;
@@ -217,9 +353,8 @@ function render() {
   process.stdout.write(out);
 }
 
-// ── Event handling ──────────────────────────────────────────────────
+// ── Events ──────────────────────────────────────────────────────────
 function handleEvent(data: { event?: string; tool?: string }) {
-  // Wake up from sleep
   if (mood === "sleeping") {
     mood = "surprised";
     bubble = "!";
@@ -301,7 +436,7 @@ function scheduleBlink() {
 }
 
 // ── Demo mode ───────────────────────────────────────────────────────
-if (process.argv.includes("--demo")) {
+function demoMode() {
   process.stdout.write("\x1b[2J");
   const moods: Mood[] = [
     "idle",
@@ -325,31 +460,39 @@ if (process.argv.includes("--demo")) {
     setTimeout(next, 1500);
   };
   next();
+  setupCleanup();
 }
 
 // ── Watch mode ──────────────────────────────────────────────────────
-else {
+function watchMode() {
   process.stdout.write("\x1b[2J");
   if (!existsSync(STATE_FILE)) writeFileSync(STATE_FILE, "{}");
 
-  watch(STATE_FILE, () => {
+  // Poll state file for changes (portable across platforms)
+  setInterval(() => {
     try {
+      const stat = statSync(STATE_FILE);
+      if (stat.mtimeMs <= lastMtime) return;
+      lastMtime = stat.mtimeMs;
       const raw = readFileSync(STATE_FILE, "utf-8");
       if (raw === lastStateRaw) return;
       lastStateRaw = raw;
       handleEvent(JSON.parse(raw));
     } catch {}
-  });
+  }, 500);
 
   scheduleBlink();
   resetSleep();
   render();
+  setupCleanup();
 }
 
 // ── Cleanup ─────────────────────────────────────────────────────────
-const cleanup = () => {
-  process.stdout.write("\x1b[?25h\n");
-  process.exit(0);
-};
-process.on("SIGINT", cleanup);
-process.on("SIGTERM", cleanup);
+function setupCleanup() {
+  const cleanup = () => {
+    process.stdout.write("\x1b[?25h\n");
+    process.exit(0);
+  };
+  process.on("SIGINT", cleanup);
+  process.on("SIGTERM", cleanup);
+}
