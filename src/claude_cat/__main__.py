@@ -494,6 +494,7 @@ class Litter:
                         data = json.loads(f.read())
                     cat.cwd = data.get("cwd", "")
                     cat.last_mtime = os.path.getmtime(path)
+                    cat.last_event = os.path.getmtime(path)  # real timestamp
                     cat.last_raw = json.dumps(data)
                     # Restore state from last event + transcript
                     ev = data.get("event", "")
@@ -727,26 +728,27 @@ def litter_mode(sprite_data=None):
     signal.signal(signal.SIGTERM, cleanup)
     try:
         tty.setcbreak(fd)
-        fcntl.fcntl(fd, fcntl.F_SETFL, orig_fl | os.O_NONBLOCK)
         while running:
             litter.scan()
             litter.tick()
             litter.render()
-            # Non-blocking key check
-            try:
-                ch = os.read(fd, 1).decode("utf-8", errors="ignore")
-                if ch in ("c", "C"):
-                    random.shuffle(PALETTE)
-                    for i, sid in enumerate(litter.cat_order):
-                        if sid in litter.cats:
-                            litter.cats[sid].color = PALETTE[i % len(PALETTE)]
-                elif ch in ("q", "Q", "\x03"):  # q or ctrl-c
-                    break
-            except (BlockingIOError, OSError):
-                pass
-            time.sleep(0.1)
+            # Non-blocking key check using select
+            import select
+            if select.select([fd], [], [], 0.1)[0]:
+                try:
+                    ch = os.read(fd, 1).decode("utf-8", errors="ignore")
+                    if ch in ("c", "C"):
+                        random.shuffle(PALETTE)
+                        for i, sid in enumerate(litter.cat_order):
+                            if sid in litter.cats:
+                                litter.cats[sid].color = PALETTE[i % len(PALETTE)]
+                    elif ch in ("q", "Q", "\x03"):
+                        break
+                except OSError:
+                    pass
+            else:
+                pass  # select handled the 0.1s sleep
     finally:
-        fcntl.fcntl(fd, fcntl.F_SETFL, orig_fl)
         termios.tcsetattr(fd, termios.TCSADRAIN, old_term)
         sys.stdout.write(SHOW + "\n")
         sys.stdout.flush()
