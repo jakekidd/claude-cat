@@ -24,6 +24,7 @@ HOOK_EVENTS = [
     "Stop",
     "SubagentStart",
     "SubagentStop",
+    "UserPromptSubmit",
 ]
 
 BLOCKS = " \u2597\u2596\u2584\u259d\u2590\u259e\u259f\u2598\u259a\u258c\u2599\u2580\u259c\u259b\u2588"
@@ -131,7 +132,48 @@ class Cat:
         self.last_raw = ""
         self.last_mtime = 0.0
         self.last_tool = ""
+        self.last_message = ""
         self.event_count = 0
+
+    def _read_last_message(self, transcript_path):
+        """Try to read the last assistant message from the transcript JSONL."""
+        try:
+            if not os.path.exists(transcript_path):
+                return
+            # Read last few lines (tail) to find the latest assistant message
+            with open(transcript_path, "rb") as f:
+                # Seek to end, scan backwards for last few lines
+                f.seek(0, 2)
+                size = f.tell()
+                # Read last 8KB at most
+                chunk = min(8192, size)
+                f.seek(size - chunk)
+                lines = f.read().decode("utf-8", errors="ignore").strip().split("\n")
+
+            # Scan backwards for last assistant text
+            for line in reversed(lines):
+                try:
+                    entry = json.loads(line)
+                    if entry.get("type") == "assistant" and entry.get("message", {}).get("content"):
+                        content = entry["message"]["content"]
+                        # Content can be a list of blocks or a string
+                        if isinstance(content, list):
+                            for block in reversed(content):
+                                if isinstance(block, dict) and block.get("type") == "text":
+                                    text = block.get("text", "").strip()
+                                    if text:
+                                        # First line, truncated
+                                        first = text.split("\n")[0]
+                                        self.last_message = first[:60] + ("..." if len(first) > 60 else "")
+                                        return
+                        elif isinstance(content, str) and content.strip():
+                            first = content.strip().split("\n")[0]
+                            self.last_message = first[:60] + ("..." if len(first) > 60 else "")
+                            return
+                except (json.JSONDecodeError, KeyError):
+                    continue
+        except Exception:
+            pass
 
     def _get_sprite(self):
         """Get the current sprite to display."""
@@ -163,7 +205,16 @@ class Cat:
         ev = data.get("event", "")
         tool = data.get("tool", "")
 
-        if ev in ("Stop", "SubagentStop"):
+        if ev == "UserPromptSubmit":
+            self.state = "thinking"
+            self.frame_idx = 0
+            self.next_frame = time.time() + 0.5
+            self.bubble = "thinking"
+            # Wake from sleep
+            if self.state == "sleeping":
+                self.reaction = "surprised"
+                self.reaction_end = time.time() + 0.5
+        elif ev in ("Stop", "SubagentStop"):
             self.reaction = "happy"
             self.reaction_end = time.time() + self.reactions.get("happy", {}).get("hold", 4.0)
             self.state = "idle"
@@ -187,6 +238,11 @@ class Cat:
             self.bubble = "thinking"
         else:
             self.bubble = ev.lower() or ""
+
+        # Try to read last message from transcript
+        transcript = data.get("transcript_path", "")
+        if transcript:
+            self._read_last_message(transcript)
 
         if tool:
             self.last_tool = tool
@@ -396,10 +452,18 @@ class Litter:
                 if cat.state in ("idle", "sleeping") and cat.last_tool:
                     extra = " " + DIM + "last:" + cat.last_tool + RST
                 status_line = fg + BOLD + status + RST + extra + "  " + DIM + ago + RST
+                # Truncate last message for display
+                msg = ""
+                if cat.last_message:
+                    max_w = 40
+                    msg = cat.last_message[:max_w]
+                    if len(cat.last_message) > max_w:
+                        msg += "..."
                 labels = [
                     status_line,
                     fg + cwd_short + RST if cwd_short else "",
                     DIM + cat.session_id[:16] + RST,
+                    DIM + msg + RST if msg else "",
                 ]
                 for i, line in enumerate(sprite):
                     out += render_hex_line(line, color=cat.color)
@@ -428,6 +492,7 @@ def hook_mode():
                     "ts": int(time.time() * 1000),
                     "session_id": session_id,
                     "cwd": data.get("cwd", ""),
+                    "transcript_path": data.get("transcript_path", ""),
                 },
                 f,
             )
