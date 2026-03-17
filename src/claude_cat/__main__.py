@@ -143,9 +143,13 @@ class Cat:
         if not state_cfg:
             return []
 
-        # Blink briefly overrides
-        if self.blinking and "blink" in state_cfg:
-            return state_cfg["blink"]
+        # Blink: use blink key if present, or frame 0 if labeled "blink"
+        if self.blinking:
+            if "blink" in state_cfg:
+                return state_cfg["blink"]
+            labels = state_cfg.get("labels", [])
+            if labels and labels[0] == "blink":
+                return state_cfg["frames"][0]
 
         frames = state_cfg.get("frames", [])
         if not frames:
@@ -187,13 +191,12 @@ class Cat:
 
     def handle_event(self, data):
         """Process event with wake-up animation (for target mode)."""
-        if self.state == "idle" and not self.reaction:
-            # Check if was sleeping (idle for 2+ min)
-            if time.time() - self.last_event > 120:
-                self.reaction = "surprised"
-                self.reaction_end = time.time() + 0.5
-                self.render()
-                time.sleep(0.4)
+        if self.state == "sleeping":
+            self.reaction = "surprised"
+            self.reaction_end = time.time() + 0.5
+            self.state = "idle"
+            self.render()
+            time.sleep(0.4)
         self._process_event(data)
         self.render()
 
@@ -213,10 +216,16 @@ class Cat:
         ms = state_cfg.get("ms", 2000)
 
         if not self.reaction and not self.blinking and frames and now >= self.next_frame:
+            labels = state_cfg.get("labels", [])
+            # Skip blink frame (idx 0) during shuffle — blink timer handles it
+            skip_blink = labels and labels[0] == "blink"
+            start = 1 if skip_blink else 0
             if mode == "loop":
                 self.frame_idx = (self.frame_idx + 1) % len(frames)
-            elif mode == "shuffle":
-                self.frame_idx = random.randint(0, len(frames) - 1)
+                if skip_blink and self.frame_idx == 0:
+                    self.frame_idx = 1
+            elif mode == "shuffle" and len(frames) > start:
+                self.frame_idx = random.randint(start, len(frames) - 1)
             self.next_frame = now + ms / 1000.0
             dirty = True
 
@@ -234,13 +243,16 @@ class Cat:
             self.blinking = False
             dirty = True
 
-        # Sleep (idle for 2 min)
+        # Idle for 2 min -> sleeping
         if self.state == "idle" and not self.reaction and now - self.last_event > 120:
-            # Already idle, no change needed — the idle animation handles it
-            pass
+            self.state = "sleeping"
+            self.frame_idx = 0
+            self.overlay = "plug"
+            self.overlay_end = now + OVERLAYS["plug"]["duration"]
+            dirty = True
 
-        # Interrupted (was working, went quiet for 2 min)
-        if self.state != "idle" and not self.reaction and now - self.last_event > 120:
+        # Was working, went quiet for 2 min -> interrupted then idle
+        if self.state not in ("idle", "sleeping") and not self.reaction and now - self.last_event > 120:
             self.reaction = "interrupted"
             self.reaction_end = now + self.reactions.get("interrupted", {}).get("hold", 10.0)
             self.state = "idle"
