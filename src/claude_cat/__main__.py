@@ -249,11 +249,7 @@ class Cat:
             self.frame_idx = 0
             self.next_frame = time.time() + 0.5
         elif ev == "Stop":
-            # Only "waiting" if was actually doing something
-            if self.state not in ("idle", "waiting", "sleeping"):
-                self.state = "waiting"
-            else:
-                self.state = "idle"
+            self.state = "idle"
             self.reaction = "happy"
             self.reaction_end = time.time() + self.reactions.get("happy", {}).get("hold", 4.0)
             self.reaction_msg = "done!"
@@ -353,7 +349,7 @@ class Cat:
 
         # ── Timeouts (state machine) ──
         quiet = now - self.last_event
-        is_active = self.state not in ("idle", "waiting", "sleeping")
+        is_active = self.state not in ("idle", "sleeping")
 
         # Active (reading/cooking/browsing) + 15s quiet -> thinking
         if self.state in ("reading", "cooking", "browsing") and not self.reaction and quiet > 15:
@@ -469,15 +465,11 @@ class Litter:
                     ev = data.get("event", "")
                     tool = data.get("tool", "")
                     age = time.time() - os.path.getmtime(path)
-                    if ev == "Stop":
-                        cat.state = "waiting"
-                    elif ev in ("PostToolUse", "PreToolUse") and age < 30:
+                    if ev in ("PostToolUse", "PreToolUse") and age < 30:
                         cat.state = TOOL_STATES.get(tool, "cooking")
                     elif ev == "UserPromptSubmit" and age < 30:
                         cat.state = "thinking"
-                    elif age > 120:
-                        cat.state = "sleeping"
-                    # else: stays idle
+                    # else: idle (Stop, stale, unknown → idle)
                     # Read transcript for last message + user prompt
                     tp = data.get("transcript_path", "")
                     if tp:
@@ -549,21 +541,21 @@ class Litter:
                     ago = "%dm ago" % int(elapsed / 60)
                 else:
                     ago = "%dh ago" % int(elapsed / 3600)
+                # Display label: sleeping shows as "idle" (sleeping is just visual)
+                display_state = "idle" if cat.state == "sleeping" else cat.state
                 # Line 0: state + time ago + optional reaction message
-                state_text = fg + BOLD + cat.state + RST + "  " + DIM + ago + RST
+                state_text = fg + BOLD + display_state + RST + "  " + DIM + ago + RST
                 if cat.reaction_msg:
                     state_text += "  " + CSI + "33m" + cat.reaction_msg + RST
                 # Line 1: project dir
                 line1 = fg + cwd_short + RST if cwd_short else ""
                 # Line 2: session ID + last tool
                 id_text = DIM + cat.session_id[:16] + RST
-                if cat.state in ("idle", "waiting", "sleeping") and cat.last_tool:
+                if cat.state in ("idle", "sleeping") and cat.last_tool:
                     id_text += "  " + DIM + "last:" + cat.last_tool + RST
                 # Line 3: last message or user prompt (fit to terminal width)
                 raw_msg = ""
-                if cat.state == "waiting" and cat.last_user_prompt:
-                    raw_msg = "> " + cat.last_user_prompt
-                elif cat.last_message:
+                if cat.last_message:
                     raw_msg = cat.last_message
                 msg = ""
                 if raw_msg:
@@ -676,20 +668,47 @@ def uninstall_hooks():
 
 
 def litter_mode(sprite_data=None):
+    import fcntl
+    import termios
+    import tty
     sys.stdout.write(CLR)
     sys.stdout.flush()
     litter = Litter(sprite_data)
+    fd = sys.stdin.fileno()
+    old_term = termios.tcgetattr(fd)
+    orig_fl = fcntl.fcntl(fd, fcntl.F_GETFL)
     def cleanup(*_):
+        fcntl.fcntl(fd, fcntl.F_SETFL, orig_fl)
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_term)
         sys.stdout.write(SHOW + "\n")
         sys.stdout.flush()
         sys.exit(0)
     signal.signal(signal.SIGINT, cleanup)
     signal.signal(signal.SIGTERM, cleanup)
-    while True:
-        litter.scan()
-        litter.tick()
-        litter.render()
-        time.sleep(0.1)
+    try:
+        tty.setcbreak(fd)
+        while True:
+            litter.scan()
+            litter.tick()
+            litter.render()
+            # Non-blocking key check
+            fcntl.fcntl(fd, fcntl.F_SETFL, orig_fl | os.O_NONBLOCK)
+            try:
+                ch = os.read(fd, 1).decode("utf-8", errors="ignore")
+                if ch in ("c", "C"):
+                    # Reroll colors
+                    random.shuffle(PALETTE)
+                    for i, sid in enumerate(litter.cat_order):
+                        if sid in litter.cats:
+                            litter.cats[sid].color = PALETTE[i % len(PALETTE)]
+                elif ch in ("q", "Q"):
+                    cleanup()
+            except (BlockingIOError, OSError):
+                pass
+            fcntl.fcntl(fd, fcntl.F_SETFL, orig_fl)
+            time.sleep(0.1)
+    finally:
+        cleanup()
 
 
 def target_mode(session_id, sprite_data=None):
