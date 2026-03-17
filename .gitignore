@@ -5,3 +5,4 @@ dist/
 build/
 .eggs/
 node_modules/
+TODO.md
