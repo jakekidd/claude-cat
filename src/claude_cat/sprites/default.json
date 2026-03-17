@@ -178,6 +178,7 @@
       "ms": 200
     },
     "cooking": {
+      "_note": "linear loop with random blinks interspersed",
       "frames": [
         [
           "00030000003000",
@@ -225,7 +226,7 @@
         "0CIIIIFFIIIIC0",
         "00097700BB6000"
       ],
-      "mode": "shuffle",
+      "mode": "loop",
       "ms": 150
     },
     "browsing": {

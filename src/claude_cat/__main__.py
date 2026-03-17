@@ -115,6 +115,7 @@ class Cat:
         # Reaction = brief face override from events (expires)
         self.reaction = None
         self.reaction_end = 0.0
+        self.reaction_msg = ""  # expressive message shown separately from state
         # Animation
         self.frame_idx = 0
         self.next_frame = time.time() + random.uniform(0.5, 2.0)
@@ -201,43 +202,44 @@ class Cat:
         return frames[self.frame_idx % len(frames)]
 
     def _process_event(self, data):
-        """Update state and reaction from hook event."""
+        """Update state and reaction from hook event.
+
+        State = what Claude is doing (persists, shown as label).
+        Reaction = brief face + message (expires, shown separately).
+        """
         ev = data.get("event", "")
         tool = data.get("tool", "")
+        was_sleeping = self.state == "sleeping"
+
+        # Wake from sleep on any event
+        if was_sleeping:
+            self.reaction = "surprised"
+            self.reaction_end = time.time() + 0.5
 
         if ev == "UserPromptSubmit":
             self.state = "thinking"
             self.frame_idx = 0
             self.next_frame = time.time() + 0.5
-            self.bubble = "thinking"
-            # Wake from sleep
-            if self.state == "sleeping":
-                self.reaction = "surprised"
-                self.reaction_end = time.time() + 0.5
         elif ev in ("Stop", "SubagentStop"):
+            self.state = "idle"
             self.reaction = "happy"
             self.reaction_end = time.time() + self.reactions.get("happy", {}).get("hold", 4.0)
-            self.state = "idle"
-            self.bubble = "done!" if ev == "Stop" else "returned"
+            self.reaction_msg = "done!" if ev == "Stop" else "returned"
             self.overlay = "bulb"
             self.overlay_end = time.time() + OVERLAYS["bulb"]["duration"]
         elif ev == "PostToolUseFailure":
             self.reaction = "error"
             self.reaction_end = time.time() + self.reactions.get("error", {}).get("hold", 4.0)
-            self.bubble = "oops"
+            self.reaction_msg = "oops"
         elif ev in ("PostToolUse", "PreToolUse"):
             new_state = TOOL_STATES.get(tool, "cooking")
             if new_state != self.state:
                 self.state = new_state
                 self.frame_idx = 0
                 self.next_frame = time.time() + 0.5
-            self.bubble = self.state
         elif ev == "SubagentStart":
             self.state = "thinking"
             self.frame_idx = 0
-            self.bubble = "thinking"
-        else:
-            self.bubble = ev.lower() or ""
 
         # Try to read last message from transcript
         transcript = data.get("transcript_path", "")
@@ -248,7 +250,6 @@ class Cat:
             self.last_tool = tool
         self.event_count += 1
         self.last_event = time.time()
-        self.bubble_end = time.time() + 4
 
     def handle_event(self, data):
         """Process event with wake-up animation (for target mode)."""
@@ -268,6 +269,7 @@ class Cat:
         # Expire reaction
         if self.reaction and now >= self.reaction_end:
             self.reaction = None
+            self.reaction_msg = ""
             dirty = True
 
         # Advance state animation frame
@@ -316,6 +318,7 @@ class Cat:
         if self.state not in ("idle", "sleeping") and not self.reaction and now - self.last_event > 120:
             self.reaction = "interrupted"
             self.reaction_end = now + self.reactions.get("interrupted", {}).get("hold", 10.0)
+            self.reaction_msg = "interrupted"
             self.state = "idle"
             self.overlay = "plug"
             self.overlay_end = now + OVERLAYS["plug"]["duration"]
@@ -327,7 +330,7 @@ class Cat:
             self.overlay_end = 0
             dirty = True
 
-        # Expire bubble
+        # Expire bubble (legacy, kept for target mode speech bubble)
         if self.bubble and self.bubble_end and now >= self.bubble_end:
             self.bubble = ""
             self.bubble_end = 0
@@ -342,8 +345,9 @@ class Cat:
 
         out = HOME + HIDE
 
-        if self.bubble:
-            inner = " " + self.bubble + " "
+        bubble_text = self.reaction_msg or ""
+        if bubble_text:
+            inner = " " + bubble_text + " "
             horiz = "\u2500" * len(inner)
             pad = " " * max(0, (cat_w - len(inner) - 2) // 2)
             out += pad + DIM + "\u256d" + horiz + "\u256e" + RST + CLRL + "\n"
@@ -446,13 +450,17 @@ class Litter:
                     ago = "%dm ago" % int(elapsed / 60)
                 else:
                     ago = "%dh ago" % int(elapsed / 3600)
-                # Status line: state + context + time
-                status = cat.bubble or cat.state
-                extra = ""
+                # Line 0: state + time ago + optional reaction message
+                state_text = fg + BOLD + cat.state + RST + "  " + DIM + ago + RST
+                if cat.reaction_msg:
+                    state_text += "  " + CSI + "33m" + cat.reaction_msg + RST
+                # Line 1: project dir
+                line1 = fg + cwd_short + RST if cwd_short else ""
+                # Line 2: session ID + last tool
+                id_text = DIM + cat.session_id[:16] + RST
                 if cat.state in ("idle", "sleeping") and cat.last_tool:
-                    extra = " " + DIM + "last:" + cat.last_tool + RST
-                status_line = fg + BOLD + status + RST + extra + "  " + DIM + ago + RST
-                # Truncate last message for display
+                    id_text += "  " + DIM + "last:" + cat.last_tool + RST
+                # Line 3: last message
                 msg = ""
                 if cat.last_message:
                     max_w = 40
@@ -460,9 +468,9 @@ class Litter:
                     if len(cat.last_message) > max_w:
                         msg += "..."
                 labels = [
-                    status_line,
-                    fg + cwd_short + RST if cwd_short else "",
-                    DIM + cat.session_id[:16] + RST,
+                    state_text,
+                    line1,
+                    id_text,
                     DIM + msg + RST if msg else "",
                 ]
                 for i, line in enumerate(sprite):
