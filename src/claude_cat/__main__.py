@@ -130,6 +130,8 @@ class Cat:
         self.last_event = time.time()
         self.last_raw = ""
         self.last_mtime = 0.0
+        self.last_tool = ""
+        self.event_count = 0
 
     def _get_sprite(self):
         """Get the current sprite to display."""
@@ -186,6 +188,9 @@ class Cat:
         else:
             self.bubble = ev.lower() or ""
 
+        if tool:
+            self.last_tool = tool
+        self.event_count += 1
         self.last_event = time.time()
         self.bubble_end = time.time() + 4
 
@@ -361,7 +366,9 @@ class Litter:
                 dirty = True
         return dirty
 
-    def render(self):
+    def render(self, now=None):
+        if now is None:
+            now = time.time()
         out = HOME + HIDE
         if not self.cats:
             out += CLRL + "\n"
@@ -375,8 +382,22 @@ class Litter:
                 sprite = cat._get_sprite()
                 fg = CSI + "38;5;%dm" % cat.color if cat.color else ""
                 cwd_short = os.path.basename(cat.cwd.rstrip("/")) if cat.cwd else ""
+                # Time since last activity
+                elapsed = now - cat.last_event
+                if elapsed < 60:
+                    ago = "%ds ago" % int(elapsed)
+                elif elapsed < 3600:
+                    ago = "%dm ago" % int(elapsed / 60)
+                else:
+                    ago = "%dh ago" % int(elapsed / 3600)
+                # Status line: state + context + time
+                status = cat.bubble or cat.state
+                extra = ""
+                if cat.state in ("idle", "sleeping") and cat.last_tool:
+                    extra = " " + DIM + "last:" + cat.last_tool + RST
+                status_line = fg + BOLD + status + RST + extra + "  " + DIM + ago + RST
                 labels = [
-                    fg + BOLD + (cat.bubble or cat.state) + RST,
+                    status_line,
                     fg + cwd_short + RST if cwd_short else "",
                     DIM + cat.session_id[:16] + RST,
                 ]

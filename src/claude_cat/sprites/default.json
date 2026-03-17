@@ -57,7 +57,7 @@
           "00030000003000",
           "006CB00006CB00",
           "00IIIIIIIIII00",
-          "37I52IIII52IB3",
+          "37I50IIII50IB3",
           "37IIIIB7IIIIB3",
           "0CIIIIFFIIIIC0",
           "000B7A005B7000"
@@ -66,7 +66,7 @@
           "00030000003000",
           "006CB00006CB00",
           "00IIIIIIIIII00",
-          "37I1AIIII1AIB3",
+          "37I0AIIII0AIB3",
           "37IIIIB7IIIIB3",
           "0CIIIIFFIIIIC0",
           "000B7A005B7000"
@@ -114,6 +114,7 @@
     "sleeping": {
       "frames": [
         [
+          "00030000003000",
           "006CB00006CB00",
           "00IIIIIIIIII00",
           "37IIIIIIIIIIB3",
@@ -390,10 +391,10 @@
         "00030000003000",
         "006CB00006CB00",
         "00IIIIIIIIII00",
-        "CDIEDIIIIEDIEC",
-        "CDIIIDFFEIIIEC",
+        "CDI9AIIII9AIEC",
+        "CDIIIDEFEIIIEC",
         "0CIIIFFFFIIIC0",
-        "000B7A005B7000"
+        "00093600936000"
       ],
       "hold": 4.0
     },
@@ -413,10 +414,10 @@
       "frame": [
         "00030000003000",
         "006CB00006CB00",
-        "00ICCIIIICCI00",
+        "00IEDIIIIEDI00",
         "37I5AIIII5AIB3",
         "37IIIICCIIIIB3",
-        "0CIIIIIIIIIIC0",
+        "0CIIIIB7IIIIC0",
         "000B7A005B7000"
       ],
       "hold": 0.5
@@ -426,7 +427,7 @@
         "00030000003000",
         "006CB00006CB00",
         "00IIIIIIIIII00",
-        "37IEDIIIIEDIB3",
+        "37IB7IIIIB7IB3",
         "37IIIIFFIIIIB3",
         "0CIIIIIIIIIIC0",
         "000B7A005B7000"
