@@ -187,7 +187,7 @@
           "37I99IIII99IB3",
           "37IIIDB7EIIIB3",
           "0CIIIIFFIIIIC0",
-          "0004CC00BB6000"
+          "0004CC00936000"
         ],
         [
           "00030000003000",
@@ -196,7 +196,7 @@
           "37I66IIII66IB3",
           "37IIIDB7EIIIB3",
           "0CIIIIFFIIIIC0",
-          "0004CC00BB6000"
+          "0004CC00936000"
         ],
         [
           "00030000003000",
@@ -205,7 +205,7 @@
           "37I99IIII99IB3",
           "37IIIDB7EIIIB3",
           "0CIIIIFFIIIIC0",
-          "000977004CC000"
+          "000936004CC000"
         ],
         [
           "00030000003000",
@@ -214,7 +214,7 @@
           "37I66IIII66IB3",
           "37IIIDB7EIIIB3",
           "0CIIIIFFIIIIC0",
-          "000977004CC000"
+          "000936004CC000"
         ]
       ],
       "blink": [
@@ -224,10 +224,10 @@
         "37IIIIIIIIIIB3",
         "37IFFIB7IFFIB3",
         "0CIIIIFFIIIIC0",
-        "00097700BB6000"
+        "000CC700BCC000"
       ],
       "mode": "loop",
-      "ms": 150
+      "ms": 200
     },
     "browsing": {
       "frames": [

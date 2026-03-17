@@ -44,8 +44,20 @@ TOOL_STATES = {
     "NotebookEdit": "cooking",
 }
 
-# Warm palette, shuffled each boot
-PALETTE = [208, 209, 215, 216, 173, 179, 180, 137, 172, 214]
+# Muted rainbow — all colors share Claude orange's warmth and saturation.
+# Not neon, not pastel. Each one belongs in the same room as the orange.
+PALETTE = [
+    208,  # claude orange
+    174,  # dusty rose
+    137,  # warm tan
+    143,  # sage green
+    109,  # muted teal
+    67,   # steel blue
+    133,  # soft purple
+    167,  # clay red
+    179,  # muted gold
+    73,   # dusty cyan
+]
 random.shuffle(PALETTE)
 
 OVERLAYS = {
@@ -305,6 +317,12 @@ class Cat:
             dirty = True
         elif self.blinking and now >= self.blink_end:
             self.blinking = False
+            dirty = True
+
+        # Active state quiet for 15s -> drop to thinking (still processing)
+        if self.state in ("reading", "cooking", "browsing") and now - self.last_event > 15:
+            self.state = "thinking"
+            self.frame_idx = 0
             dirty = True
 
         # Idle/waiting for 2 min -> sleeping
