@@ -145,6 +145,7 @@ class Editor:
         self.cy = 0
         self.brush_idx = len(BRUSHES) - 1  # default: I
         self.clipboard = None
+        self.mirror = True  # mirror mode: paint both sides of center
         self.playing = False
         self.play_frame = 0
         self.play_time = 0.0
@@ -304,14 +305,22 @@ class Editor:
         out += CSI + "K\n"
 
         # Status
-        out += DIM
+        # Play state indicator
         if self.playing:
-            out += "  PLAYING  "
-        out += "wasd:move space:paint []:brush </>:frame enter:add bksp:del +/-:ms P:play Y/V:copy S:save"
-        out += RST
+            out += "  " + CSI + "32m\u25b6 playing" + RST + "  "
+        else:
+            out += "  " + CSI + "31m\u25a0 stopped" + RST + "  "
+        # Mirror indicator
+        if self.mirror:
+            out += CSI + "36m[mirror]" + RST + "  "
         if self.saved:
-            out += "  " + CSI + "32m[saved]" + RST
+            out += CSI + "32m[saved]" + RST + "  "
         out += CSI + "K\n"
+        out += DIM
+        out += "  wasd:move  space:paint  []:brush  </>:frame  enter:add  bksp:del"
+        out += RST + CSI + "K\n" + DIM
+        out += "  +/-:ms  P:play/pause  M:mirror  Y/V:copy/paste  Shift+S:save  Q:quit"
+        out += RST + CSI + "K\n"
         out += "  char(%d,%d) frame:%s" % (self.cx, self.cy, self._frame_label(self.frame_idx))
         out += CSI + "K\n" + CSI + "J"
 
@@ -432,12 +441,21 @@ class Editor:
                     self.cx = max(0, self.cx - 1)
                 elif key in ("d", "D", "RIGHT"):
                     self.cx = min(MAX_W - 1, self.cx + 1)
+                elif key == "m":
+                    self.mirror = not self.mirror
                 elif key == " ":
                     grid = self._current_grid()
                     if grid:
                         current = grid[self.cy][self.cx].upper()
                         brush = BRUSHES[self.brush_idx]
-                        grid[self.cy][self.cx] = "0" if current == brush else brush
+                        val = "0" if current == brush else brush
+                        grid[self.cy][self.cx] = val
+                        # Mirror: paint the symmetric column
+                        if self.mirror:
+                            w = len(grid[self.cy])
+                            mirror_x = w - 1 - self.cx
+                            if mirror_x != self.cx:
+                                grid[self.cy][mirror_x] = val
                 elif key == "]":
                     self.brush_idx = (self.brush_idx + 1) % len(BRUSHES)
                 elif key == "[":

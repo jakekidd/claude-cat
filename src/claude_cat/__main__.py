@@ -549,6 +549,31 @@ def demo_mode(sprite_data=None):
     cleanup()
 
 
+def tmux_ccm_mode():
+    """Launch tmux with CCM on top and clat on bottom."""
+    import shutil
+    import subprocess
+    if not shutil.which("tmux"):
+        print("tmux not found. Install tmux first.")
+        sys.exit(1)
+    ccm = shutil.which("ccm") or shutil.which("claude-monitor") or shutil.which("claude-code-monitor")
+    clat = shutil.which("clat") or shutil.which("claude-cat")
+    if not ccm:
+        print("Claude Code Monitor not found (ccm/claude-monitor). Install it first:")
+        print("  pip install claude-monitor")
+        sys.exit(1)
+    if not clat:
+        print("claude-cat not in PATH. Run: pip install -e .")
+        sys.exit(1)
+    # Create tmux session with CCM on top, clat on bottom
+    session = "claude-dashboard"
+    subprocess.run(["tmux", "kill-session", "-t", session], capture_output=True)
+    subprocess.run(["tmux", "new-session", "-d", "-s", session, ccm])
+    subprocess.run(["tmux", "split-window", "-v", "-t", session, clat])
+    subprocess.run(["tmux", "select-pane", "-t", session + ":0.0"])  # focus CCM pane
+    subprocess.run(["tmux", "attach", "-t", session])
+
+
 def print_help():
     print(
         "claude-cat v%s\n"
@@ -556,6 +581,7 @@ def print_help():
         "Usage:\n"
         "  claude-cat                       Litter mode (all sessions)\n"
         "  claude-cat --target <session_id> Single cat for one session\n"
+        "  claude-cat --tmux-ccm            Dashboard: CCM + litter in tmux\n"
         "  claude-cat --sprite <name|path>  Use a custom sprite\n"
         "  claude-cat install               Set up Claude Code hooks\n"
         "  claude-cat uninstall             Remove Claude Code hooks\n"
@@ -585,7 +611,9 @@ def main():
     sprite_data = None
     if cmd in ("", "--watch", "watch", "--demo", "demo"):
         sprite_data = sprites_mod.load(sprite_name)
-    if cmd in ("--hook", "hook"):
+    if cmd == "--tmux-ccm":
+        tmux_ccm_mode()
+    elif cmd in ("--hook", "hook"):
         hook_mode()
     elif cmd in ("--demo", "demo"):
         demo_mode(sprite_data)
