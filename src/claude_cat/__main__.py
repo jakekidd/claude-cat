@@ -27,6 +27,7 @@ HOOK_EVENTS = [
     "UserPromptSubmit",
     "PreCompact",
     "PostCompact",
+    "PermissionRequest",
 ]
 
 BLOCKS = " \u2597\u2596\u2584\u259d\u2590\u259e\u259f\u2598\u259a\u258c\u2599\u2580\u259c\u259b\u2588"
@@ -119,24 +120,26 @@ def render_hex_line(hex_row, color=None):
 # Sleeping is visual-only (label still says "idle").
 #
 #   EVENTS:
-#     UserPromptSubmit => active/thinking
-#     PostToolUse      => active/reading|cooking|browsing (by tool)
-#     SubagentStart    => active/thinking
-#     PreCompact       => active/compacting
-#     PostCompact      => active/thinking
-#     Stop             => waiting (if transcript says assistant spoke last)
-#                      => idle    (otherwise)
+#     UserPromptSubmit   => active/thinking
+#     PostToolUse        => active/reading|cooking|browsing (by tool)
+#     SubagentStart      => active/thinking
+#     PreCompact         => compacting
+#     PostCompact        => active/thinking
+#     Stop               => idle + reaction:happy
+#     PermissionRequest  => waiting
 #     PostToolUseFailure => reaction:error (state unchanged)
 #
 #   TIMEOUTS (in tick):
 #     active/reading|cooking|browsing + 15s quiet => active/thinking
 #     active/thinking + 2min quiet => idle + reaction:interrupted
-#     idle + 2min => idle (but cat sleeps visually)
+#     idle + 2min => idle (cat sleeps visually, label stays "idle")
 #     waiting => NEVER times out
+#     compacting => NEVER times out (PostCompact ends it)
 #
 #   BOOT:
-#     transcript last = assistant => waiting
-#     state file < 30s + tool event => that active substate
+#     last event = PermissionRequest + < 5min => waiting
+#     last event = PreCompact + < 1min => compacting
+#     last event = tool + < 30s => that active substate
 #     else => idle
 #
 #   REACTIONS (overlay on any state, don't change state):
@@ -309,15 +312,14 @@ class Cat:
             self.frame_idx = 0
             self.next_frame = time.time() + 0.5
         elif ev == "Stop":
-            # Check transcript: if assistant spoke last, we're waiting for user
-            tp = data.get("transcript_path", self.transcript_path)
-            turn = self._check_transcript_turn(tp) if tp else ""
-            self.state = "waiting" if turn == "assistant" else "idle"
+            self.state = "idle"
             self.reaction = "happy"
             self.reaction_end = time.time() + self.reactions.get("happy", {}).get("hold", 4.0)
             self.reaction_msg = "done!"
             self.overlay = "bulb"
             self.overlay_end = time.time() + OVERLAYS["bulb"]["duration"]
+        elif ev == "PermissionRequest":
+            self.state = "waiting"
         elif ev == "SubagentStop":
             # Subagent finished but parent may still be working
             self.reaction = "happy"
@@ -412,7 +414,7 @@ class Cat:
 
         # ── Timeouts ──
         quiet = now - self.last_event
-        active = self.state not in ("idle", "waiting")
+        active = self.state not in ("idle", "waiting", "compacting")
 
         # active/reading|cooking|browsing + 15s quiet => active/thinking
         if self.state in ("reading", "cooking", "browsing") and not self.reaction and quiet > 15:
@@ -548,10 +550,10 @@ class Litter:
                         cat.state = TOOL_STATES.get(tool, "cooking")
                     elif ev == "UserPromptSubmit" and age < 30:
                         cat.state = "thinking"
-                    elif ev == "Stop" and tp:
-                        # Check transcript: if assistant spoke last => waiting
-                        turn = cat._check_transcript_turn(tp) if tp else ""
-                        cat.state = "waiting" if turn == "assistant" else "idle"
+                    elif ev == "PreCompact" and age < 60:
+                        cat.state = "compacting"
+                    elif ev == "PermissionRequest" and age < 300:
+                        cat.state = "waiting"
                     else:
                         cat.state = "idle"
                     # Visual sleep if idle and stale
