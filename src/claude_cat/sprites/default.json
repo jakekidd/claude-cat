@@ -117,10 +117,10 @@
           "00030000003000",
           "006CB00006CB00",
           "00IIIIIIIIII00",
-          "37IIIIIIIIIIB3",
-          "37IFFIFFIFFIB3",
-          "0CIIIIFFIIIIC0",
-          "000976009B6000"
+          "27IIIIIIIIIIB1",
+          "27IFFIB7IFFIB1",
+          "0CIIIIIIIIIIC0",
+          "000973339B6000"
         ]
       ],
       "mode": "loop",
@@ -224,7 +224,7 @@
         "37IIIIIIIIIIB3",
         "37IFFIB7IFFIB3",
         "0CIIIIFFIIIIC0",
-        "000CC700BCC000"
+        "000CCC00CCC000"
       ],
       "mode": "loop",
       "ms": 200
@@ -384,6 +384,75 @@
       ],
       "mode": "shuffle",
       "ms": 1000
+    },
+    "waiting": {
+      "frames": [
+        [
+          "00030000003000",
+          "006CB00006CB00",
+          "00IIIIIIIIII00",
+          "37I50IIII0AIB3",
+          "37IIIIB7IIIIB3",
+          "0CIIIIFFIIIIC0",
+          "000B7A005B7000"
+        ],
+        [
+          "00030000003000",
+          "006CB00006CB00",
+          "00IIIIIIIIII00",
+          "37I0AIIII0AIB3",
+          "37IIIIB7IIIIB3",
+          "0CIIIIFFIIIIC0",
+          "000B7A005B7000"
+        ],
+        [
+          "00030000003000",
+          "006CB00006CB00",
+          "00IIIIIIIIII00",
+          "37I08IIII08IB3",
+          "37IIIIB7IIIIB3",
+          "0CIIIIFFIIIIC0",
+          "000B7A005B7000"
+        ],
+        [
+          "00030000003000",
+          "006CB00006CB00",
+          "00IIIIIIIIII00",
+          "37I0AIIII0AIB3",
+          "37IIIIB7IIIIB3",
+          "0CIIIIFFIIIIC0",
+          "000B7A005B7000"
+        ],
+        [
+          "00030000003000",
+          "006CB00006CB00",
+          "00IIIIIIIIII00",
+          "37I50IIII0AIB3",
+          "37IIIIB7IIIIB3",
+          "0CIIIIFFIIIIC0",
+          "000B7A005B7000"
+        ],
+        [
+          "00030000003000",
+          "006CB00006CB00",
+          "00IIIIIIIIII00",
+          "37I08IIII08IB3",
+          "37IIIIB7IIIIB3",
+          "0CIIIIFFIIIIC0",
+          "000B7A005B7000"
+        ]
+      ],
+      "blink": [
+        "00030000003000",
+        "006CB00006CB00",
+        "00IIIIIIIIII00",
+        "37IIIIIIIIIIB3",
+        "37IFFIB7IFFIB3",
+        "0CIIIIFFIIIIC0",
+        "000B7A005B7000"
+      ],
+      "mode": "loop",
+      "ms": 1500
     }
   },
   "reactions": {

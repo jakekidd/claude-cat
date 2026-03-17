@@ -233,13 +233,22 @@ class Cat:
             self.state = "thinking"
             self.frame_idx = 0
             self.next_frame = time.time() + 0.5
-        elif ev in ("Stop", "SubagentStop"):
-            self.state = "waiting"  # done, needs user input
+        elif ev == "Stop":
+            # Only "waiting" if was actually doing something
+            if self.state not in ("idle", "waiting", "sleeping"):
+                self.state = "waiting"
+            else:
+                self.state = "idle"
             self.reaction = "happy"
             self.reaction_end = time.time() + self.reactions.get("happy", {}).get("hold", 4.0)
-            self.reaction_msg = "done!" if ev == "Stop" else "returned"
+            self.reaction_msg = "done!"
             self.overlay = "bulb"
             self.overlay_end = time.time() + OVERLAYS["bulb"]["duration"]
+        elif ev == "SubagentStop":
+            # Subagent finished but parent may still be working
+            self.reaction = "happy"
+            self.reaction_end = time.time() + self.reactions.get("happy", {}).get("hold", 2.0)
+            self.reaction_msg = "returned"
         elif ev == "PostToolUseFailure":
             self.reaction = "error"
             self.reaction_end = time.time() + self.reactions.get("error", {}).get("hold", 4.0)
