@@ -23,6 +23,7 @@ Repository = "https://github.com/jakekidd/claude-cat"
 
 [project.scripts]
 claude-cat = "claude_cat.__main__:main"
+clat = "claude_cat.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
