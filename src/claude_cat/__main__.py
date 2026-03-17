@@ -467,6 +467,14 @@ class Litter:
                 del self.cats[sid]
                 self.cat_order.remove(sid)
 
+        # Prune stale session files (older than 24h)
+        for path in files:
+            try:
+                if time.time() - os.path.getmtime(path) > 86400:
+                    os.remove(path)
+            except OSError:
+                pass
+
     def tick(self):
         now = time.time()
         dirty = False
@@ -502,6 +510,9 @@ class Litter:
                 if sid not in self.cats:
                     continue
                 cat = self.cats[sid]
+                # Skip cats with no metadata (stale/empty session files)
+                if not cat.cwd:
+                    continue
                 sprite = cat._get_sprite()
                 fg = CSI + "38;5;%dm" % cat.color if cat.color else ""
                 cwd_short = os.path.basename(cat.cwd.rstrip("/")) if cat.cwd else ""

@@ -460,37 +460,37 @@
           "00030000003000",
           "006CB00006CB00",
           "00IIIIIIIIII00",
-          "37I50IIII0AIB3",
-          "37IIIIB7IIIIB3",
-          "0CIIIIFFIIIIC0",
-          "000B7A005B7000"
+          "27I10IIII40IB1",
+          "67IIIIB7IIIIB9",
+          "06IIIIB3IIII90",
+          "000B3B00737000"
         ],
         [
           "00030000003000",
           "006CB00006CB00",
           "00IIIIIIIIII00",
-          "37IIIIIIIIIIB3",
-          "37IFFIB7IFFIB3",
-          "0CIIIIFFIIIIC0",
-          "000B7A005B7000"
+          "27I40IIII08IB1",
+          "67IIIIB7IIIIB9",
+          "06IIIIB3IIII90",
+          "000B3B00737000"
         ],
         [
           "00030000003000",
           "006CB00006CB00",
           "00IIIIIIIIII00",
-          "37I50IIII0AIB3",
-          "37IIIIB7IIIIB3",
-          "0CIIIIFFIIIIC0",
-          "000B7A005B7000"
+          "27I08IIII02IB1",
+          "67IIIIB7IIIIB9",
+          "06IIIIB3IIII90",
+          "000B3B00737000"
         ],
         [
           "00030000003000",
           "006CB00006CB00",
           "00IIIIIIIIII00",
-          "37I50IIII0AIB3",
-          "37IIIIB7IIIIB3",
-          "0CIIIIFFIIIIC0",
-          "000B7A005B7000"
+          "27I02IIII10IB1",
+          "67IIIIB7IIIIB9",
+          "06IIIIB3IIII90",
+          "000B3B00737000"
         ]
       ],
       "blink": [
