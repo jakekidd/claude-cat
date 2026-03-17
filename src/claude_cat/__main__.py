@@ -184,6 +184,7 @@ class Cat:
 
         state_cfg = self.states.get(self.state)
         if not state_cfg:
+            # waiting uses idle animation, unknown states fall back to idle
             state_cfg = self.states.get("idle", {})
         if not state_cfg:
             return []
@@ -221,7 +222,7 @@ class Cat:
             self.frame_idx = 0
             self.next_frame = time.time() + 0.5
         elif ev in ("Stop", "SubagentStop"):
-            self.state = "idle"
+            self.state = "waiting"  # done, needs user input
             self.reaction = "happy"
             self.reaction_end = time.time() + self.reactions.get("happy", {}).get("hold", 4.0)
             self.reaction_msg = "done!" if ev == "Stop" else "returned"
@@ -306,8 +307,8 @@ class Cat:
             self.blinking = False
             dirty = True
 
-        # Idle for 2 min -> sleeping
-        if self.state == "idle" and not self.reaction and now - self.last_event > 120:
+        # Idle/waiting for 2 min -> sleeping
+        if self.state in ("idle", "waiting") and not self.reaction and now - self.last_event > 120:
             self.state = "sleeping"
             self.frame_idx = 0
             self.overlay = "plug"
@@ -315,7 +316,7 @@ class Cat:
             dirty = True
 
         # Was working, went quiet for 2 min -> interrupted then idle
-        if self.state not in ("idle", "sleeping") and not self.reaction and now - self.last_event > 120:
+        if self.state not in ("idle", "waiting", "sleeping") and not self.reaction and now - self.last_event > 120:
             self.reaction = "interrupted"
             self.reaction_end = now + self.reactions.get("interrupted", {}).get("hold", 10.0)
             self.reaction_msg = "interrupted"
@@ -458,7 +459,7 @@ class Litter:
                 line1 = fg + cwd_short + RST if cwd_short else ""
                 # Line 2: session ID + last tool
                 id_text = DIM + cat.session_id[:16] + RST
-                if cat.state in ("idle", "sleeping") and cat.last_tool:
+                if cat.state in ("idle", "waiting", "sleeping") and cat.last_tool:
                     id_text += "  " + DIM + "last:" + cat.last_tool + RST
                 # Line 3: last message
                 msg = ""
