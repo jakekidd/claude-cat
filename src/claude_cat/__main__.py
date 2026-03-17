@@ -80,6 +80,21 @@ DIM = CSI + "2m"
 RST = CSI + "0m"
 
 
+def project_dir_from_transcript(transcript_path):
+    """Extract project root dir from transcript path.
+
+    Transcript lives at ~/.claude/projects/-Users-foo-Code-bar/session.jsonl
+    The dir name encodes the project path with - as separator.
+    """
+    try:
+        encoded = os.path.basename(os.path.dirname(transcript_path))
+        if encoded.startswith("-"):
+            return "/" + encoded.lstrip("-").replace("-", "/")
+    except Exception:
+        pass
+    return ""
+
+
 def state_file_for(session_id):
     return os.path.join(STATE_DIR, STATE_PREFIX + session_id + ".json")
 
@@ -158,6 +173,7 @@ class Cat:
         self.session_id = session_id or ""
         self.color = color
         self.cwd = ""
+        self.project_dir = ""  # root dir where session was started
         self.state_file = state_file_for(session_id) if session_id else STATE_FILE
         # State: idle | waiting | thinking | reading | cooking | browsing | compacting
         self.state = "idle"
@@ -397,6 +413,8 @@ class Cat:
         transcript = data.get("transcript_path", "")
         if transcript:
             self.transcript_path = transcript
+            if not self.project_dir:
+                self.project_dir = project_dir_from_transcript(transcript)
             self._read_last_message(transcript)
             self.last_transcript_read = time.time()
 
@@ -596,6 +614,7 @@ class Litter:
                     tp = data.get("transcript_path", "")
                     if tp:
                         cat.transcript_path = tp
+                        cat.project_dir = project_dir_from_transcript(tp)
                         cat._read_last_message(tp)
                         cat._read_stats(tp)
                     # Determine state
@@ -736,34 +755,28 @@ class Litter:
             out += DIM + "  no active sessions" + RST + CLRL + "\n"
             out += DIM + "  start claude code to wake a cat" + RST + CLRL + "\n"
         else:
-            # Group by directory
+            # Group by project root dir (not cwd)
             from collections import OrderedDict
             groups = OrderedDict()
             for sid, cat in valid:
-                d = cat.cwd or "unknown"
+                d = cat.project_dir or cat.cwd or "unknown"
                 groups.setdefault(d, []).append((sid, cat))
 
-            for cwd, members in groups.items():
-                cwd_short = os.path.basename(cwd.rstrip("/"))
-                if len(members) > 1:
-                    # Group header
-                    base_color = members[0][1].color or 208
-                    fg = CSI + "38;5;%dm" % base_color
-                    try:
-                        term_w = os.get_terminal_size().columns
-                    except OSError:
-                        term_w = 80
-                    header = " " + cwd_short + " "
-                    pad = max(0, term_w - len(header) - 2)
-                    out += fg + DIM + "\u2500\u2500" + RST + fg + BOLD + header + RST + fg + DIM + "\u2500" * pad + RST + CLRL + "\n"
-                    # Assign gradient colors within group
-                    for i, (sid, cat) in enumerate(members):
-                        cat.color = base_color + i  # slight shift for gradient
-                        out += self._render_cat(cat, now, show_dir=False)
-                        out += CLRL + "\n"
-                else:
-                    # Solo cat — show dir on the cat itself
-                    sid, cat = members[0]
+            for proj_dir, members in groups.items():
+                proj_short = os.path.basename(proj_dir.rstrip("/"))
+                base_color = members[0][1].color or 208
+                fg = CSI + "38;5;%dm" % base_color
+                try:
+                    term_w = os.get_terminal_size().columns
+                except OSError:
+                    term_w = 80
+                # Always show group header
+                header = " " + proj_short + " "
+                pad = max(0, term_w - len(header) - 2)
+                out += fg + DIM + "\u2500\u2500" + RST + fg + BOLD + header + RST + fg + DIM + "\u2500" * pad + RST + CLRL + "\n"
+                # Assign gradient colors within group
+                for i, (sid, cat) in enumerate(members):
+                    cat.color = base_color + i
                     out += self._render_cat(cat, now, show_dir=True)
                     out += CLRL + "\n"
 
@@ -979,7 +992,7 @@ def tmux_ccm_mode():
     subprocess.run(["tmux", "kill-session", "-t", session], capture_output=True)
     subprocess.run(["tmux", "new-session", "-d", "-s", session, ccm])
     subprocess.run(["tmux", "split-window", "-v", "-t", session, clat])
-    subprocess.run(["tmux", "select-pane", "-t", session + ":0.0"])  # focus CCM pane
+    subprocess.run(["tmux", "select-pane", "-t", session + ":0.1"])  # focus clat pane (bottom)
     subprocess.run(["tmux", "attach", "-t", session])
 
 
