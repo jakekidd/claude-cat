@@ -25,6 +25,8 @@ HOOK_EVENTS = [
     "SubagentStart",
     "SubagentStop",
     "UserPromptSubmit",
+    "PreCompact",
+    "PostCompact",
 ]
 
 BLOCKS = " \u2597\u2596\u2584\u259d\u2590\u259e\u259f\u2598\u259a\u258c\u2599\u2580\u259c\u259b\u2588"
@@ -146,6 +148,8 @@ class Cat:
         self.last_mtime = 0.0
         self.last_tool = ""
         self.last_message = ""
+        self.transcript_path = ""
+        self.last_transcript_read = 0.0
         self.event_count = 0
 
     def _read_last_message(self, transcript_path):
@@ -262,11 +266,19 @@ class Cat:
         elif ev == "SubagentStart":
             self.state = "thinking"
             self.frame_idx = 0
+        elif ev == "PreCompact":
+            self.state = "compacting"
+            self.frame_idx = 0
+        elif ev == "PostCompact":
+            self.state = "thinking"
+            self.frame_idx = 0
 
         # Try to read last message from transcript
         transcript = data.get("transcript_path", "")
         if transcript:
+            self.transcript_path = transcript
             self._read_last_message(transcript)
+            self.last_transcript_read = time.time()
 
         if tool:
             self.last_tool = tool
@@ -329,9 +341,19 @@ class Cat:
             dirty = True
 
         # Active state quiet for 15s -> drop to thinking (still processing)
-        if self.state in ("reading", "cooking", "browsing") and now - self.last_event > 15:
+        if self.state in ("reading", "cooking", "browsing") and not self.reaction and now - self.last_event > 15:
             self.state = "thinking"
             self.frame_idx = 0
+            dirty = True
+
+        # Refresh transcript for active cats every 2s
+        if (
+            self.transcript_path
+            and self.state not in ("idle", "waiting", "sleeping")
+            and now - self.last_transcript_read > 2.0
+        ):
+            self._read_last_message(self.transcript_path)
+            self.last_transcript_read = now
             dirty = True
 
         # Idle/waiting for 2 min -> sleeping
@@ -425,6 +447,19 @@ class Litter:
             if sid not in self.cats:
                 cat = Cat(self.sprite_data, session_id=sid, color=self._next_color())
                 cat.state_file = path
+                # Read metadata without triggering reactions
+                try:
+                    with open(path) as f:
+                        data = json.loads(f.read())
+                    cat.cwd = data.get("cwd", "")
+                    cat.last_mtime = os.path.getmtime(path)
+                    cat.last_raw = json.dumps(data)
+                    # Read transcript for last message
+                    tp = data.get("transcript_path", "")
+                    if tp:
+                        cat._read_last_message(tp)
+                except Exception:
+                    pass
                 self.cats[sid] = cat
                 self.cat_order.append(sid)
         for sid in list(self.cat_order):
@@ -488,12 +523,17 @@ class Litter:
                 id_text = DIM + cat.session_id[:16] + RST
                 if cat.state in ("idle", "waiting", "sleeping") and cat.last_tool:
                     id_text += "  " + DIM + "last:" + cat.last_tool + RST
-                # Line 3: last message
+                # Line 3: last message (width based on terminal)
                 msg = ""
                 if cat.last_message:
-                    max_w = 40
-                    msg = cat.last_message[:max_w]
-                    if len(cat.last_message) > max_w:
+                    try:
+                        term_w = os.get_terminal_size().columns
+                    except OSError:
+                        term_w = 80
+                    cat_w = len(sprite[0]) if sprite else 14
+                    max_msg = max(10, term_w - cat_w - 4)
+                    msg = cat.last_message[:max_msg]
+                    if len(cat.last_message) > max_msg:
                         msg += "..."
                 labels = [
                     state_text,

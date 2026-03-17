@@ -453,6 +453,57 @@
       ],
       "mode": "loop",
       "ms": 1500
+    },
+    "compacting": {
+      "frames": [
+        [
+          "00030000003000",
+          "006CB00006CB00",
+          "00IIIIIIIIII00",
+          "37I50IIII0AIB3",
+          "37IIIIB7IIIIB3",
+          "0CIIIIFFIIIIC0",
+          "000B7A005B7000"
+        ],
+        [
+          "00030000003000",
+          "006CB00006CB00",
+          "00IIIIIIIIII00",
+          "37IIIIIIIIIIB3",
+          "37IFFIB7IFFIB3",
+          "0CIIIIFFIIIIC0",
+          "000B7A005B7000"
+        ],
+        [
+          "00030000003000",
+          "006CB00006CB00",
+          "00IIIIIIIIII00",
+          "37I50IIII0AIB3",
+          "37IIIIB7IIIIB3",
+          "0CIIIIFFIIIIC0",
+          "000B7A005B7000"
+        ],
+        [
+          "00030000003000",
+          "006CB00006CB00",
+          "00IIIIIIIIII00",
+          "37I50IIII0AIB3",
+          "37IIIIB7IIIIB3",
+          "0CIIIIFFIIIIC0",
+          "000B7A005B7000"
+        ]
+      ],
+      "blink": [
+        "00030000003000",
+        "006CB00006CB00",
+        "00IIIIIIIIII00",
+        "37IIIIIIIIIIB3",
+        "37IFFIB7IFFIB3",
+        "0CIIIIFFIIIIC0",
+        "000B7A005B7000"
+      ],
+      "mode": "loop",
+      "ms": 1000
     }
   },
   "reactions": {
