@@ -130,9 +130,10 @@ def render_hex_line(hex_row, color=None):
 
 # ── State machine ────────────────────────────────────────────────────
 #
-# Three meta-states: idle, active, waiting.
-# "active" has substates: thinking, reading, cooking, browsing, compacting.
+# Two meta-states: idle and active (+ compacting).
+# "active" has substates: thinking, reading, cooking, browsing.
 # Sleeping is visual-only (label still says "idle").
+# Compacting is its own state (never times out, PostCompact ends it).
 #
 #   EVENTS:
 #     UserPromptSubmit   => active/thinking
@@ -141,7 +142,7 @@ def render_hex_line(hex_row, color=None):
 #     PreCompact         => compacting
 #     PostCompact        => active/thinking
 #     Stop               => idle + reaction:happy
-#     PermissionRequest  => waiting
+#     PermissionRequest  => idle (TODO: waiting state when reliable)
 #     PostToolUseFailure => reaction:error (state unchanged)
 #
 #   TIMEOUTS (in tick):
@@ -207,6 +208,8 @@ class Cat:
         self.total_output = 0
         self.total_cache = 0
         self.context_k = 0  # last context window size in k tokens
+        self.compactions = 0  # how many times compacted
+        self.human_turns = 0  # number of user messages
         self.stats_read = False
         self.last_transcript_read = 0.0
         self.event_count = 0
@@ -279,10 +282,15 @@ class Cat:
             total_out = 0
             total_cache = 0
             last_ctx = 0
+            compactions = 0
+            human_turns = 0
             with open(transcript_path) as f:
                 for line in f:
                     try:
                         entry = json.loads(line)
+                        t = entry.get("type", "")
+                        if t == "human":
+                            human_turns += 1
                         usage = entry.get("message", {}).get("usage", {})
                         if usage:
                             total_in += usage.get("input_tokens", 0)
@@ -293,12 +301,17 @@ class Cat:
                                 + usage.get("cache_read_input_tokens", 0)
                                 + usage.get("cache_creation_input_tokens", 0)
                             )
+                        # Count compaction markers
+                        if t == "summary" or "compact" in str(entry.get("type", "")).lower():
+                            compactions += 1
                     except (json.JSONDecodeError, KeyError):
                         continue
             self.total_input = total_in
             self.total_output = total_out
             self.total_cache = total_cache
             self.context_k = last_ctx // 1000
+            self.compactions = compactions
+            self.human_turns = human_turns
             self.stats_read = True
         except Exception:
             pass
@@ -383,7 +396,7 @@ class Cat:
             self.overlay = "bulb"
             self.overlay_end = time.time() + OVERLAYS["bulb"]["duration"]
         elif ev == "PermissionRequest":
-            self.state = "waiting"
+            pass  # TODO: waiting state when we can reliably detect it
         elif ev == "SubagentStop":
             # Subagent finished but parent may still be working
             self.reaction = "happy"
@@ -480,7 +493,7 @@ class Cat:
 
         # ── Timeouts ──
         quiet = now - self.last_event
-        active = self.state not in ("idle", "waiting", "compacting")
+        active = self.state not in ("idle", "compacting")
 
         # active/reading|cooking|browsing + 15s quiet => active/thinking
         if self.state in ("reading", "cooking", "browsing") and not self.reaction and quiet > 15:
@@ -503,19 +516,7 @@ class Cat:
             self.frame_idx = 0
             dirty = True
 
-        # waiting => NEVER times out
-
         # ── Transcript refresh ──
-        # waiting: scan every 3s to detect user responding
-        if self.state == "waiting" and self.transcript_path and now - self.last_transcript_read > 3.0:
-            turn = self._check_transcript_turn(self.transcript_path)
-            if turn == "human":
-                self.state = "thinking"
-                self.frame_idx = 0
-            self._read_last_message(self.transcript_path)
-            self.last_transcript_read = now
-            dirty = True
-
         # active: refresh every 2s for last message display
         if active and self.transcript_path and now - self.last_transcript_read > 2.0:
             self._read_last_message(self.transcript_path)
@@ -624,8 +625,6 @@ class Litter:
                         cat.state = "thinking"
                     elif ev == "PreCompact" and age < 60:
                         cat.state = "compacting"
-                    elif ev == "PermissionRequest" and age < 300:
-                        cat.state = "waiting"
                     else:
                         cat.state = "idle"
                     # Visual sleep if idle and stale
@@ -697,18 +696,23 @@ class Litter:
         if cat.state == "idle" and cat.last_tool:
             id_text += "  " + DIM + "last:" + cat.last_tool + RST
 
-        # Stats line: context / cost / tokens
+        # Stats line: fixed-width columns, normal color
         stats = ""
         if cat.stats_read:
             cost = cat.est_cost()
             total_tok = cat.total_input + cat.total_output + cat.total_cache
+            ctx_s = "%dk" % cat.context_k
+            cost_s = "$%.2f" % cost
             if total_tok > 1_000_000:
-                tok_str = "%.1fM tok" % (total_tok / 1_000_000)
+                tok_s = "%.1fM" % (total_tok / 1_000_000)
             elif total_tok > 1000:
-                tok_str = "%dk tok" % (total_tok // 1000)
+                tok_s = "%dk" % (total_tok // 1000)
             else:
-                tok_str = "%d tok" % total_tok
-            stats = DIM + "%dk ctx  $%.2f  %s" % (cat.context_k, cost, tok_str) + RST
+                tok_s = "%d" % total_tok
+            # Fixed-width: 8 for ctx, 10 for cost, 10 for tokens
+            stats = "%-8s %-10s %-10s" % (ctx_s + " ctx", cost_s, tok_s + " tok")
+            if cat.compactions > 0:
+                stats += "  %dx compacted" % cat.compactions
 
         raw_msg = cat.last_message or ""
         msg = ""
@@ -729,7 +733,7 @@ class Litter:
             labels.append(fg + cwd_short + RST if cwd_short else "")
         labels.append(id_text)
         if stats:
-            labels.append(stats)
+            labels.append(stats)  # normal color, not dim
         if msg:
             labels.append(DIM + msg + RST)
 
