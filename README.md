@@ -1,17 +1,17 @@
 # claude-cat
 
-NOTE: WIP, the actual 1-bit cat is an ugly placeholder at the moment.
+> NOTE: WIP, the actual 1-bit cat is an ugly placeholder at the moment. PRs for better sprite art very welcome.
 
 A 1-bit pixel art cat that lives in your terminal and reacts to [Claude Code](https://docs.anthropic.com/en/docs/claude-code)'s activity in real time.
 
 ## Install
 
 ```bash
-pip install claude-cat
+python3 -m pip install claude-cat
 claude-cat install
 ```
 
-The `install` command adds [hooks](https://docs.anthropic.com/en/docs/claude-code/hooks) to `~/.claude/settings.json` so Claude Code sends events to the cat.
+`install` adds [hooks](https://docs.anthropic.com/en/docs/claude-code/hooks) to `~/.claude/settings.json` so Claude Code sends events to the cat.
 
 ## Usage
 
@@ -31,6 +31,8 @@ The cat reacts as Claude Code works -- reading files, editing code, searching, t
 | `claude-cat install` | Set up Claude Code hooks |
 | `claude-cat uninstall` | Remove hooks |
 | `claude-cat --demo` | Preview all 7 expressions |
+| `claude-cat --sprite <name>` | Use a custom sprite |
+| `claude-cat list-sprites` | Show available sprites |
 | `claude-cat --version` | Show version |
 
 ## Expressions
@@ -44,6 +46,42 @@ The cat reacts as Claude Code works -- reading files, editing code, searching, t
 | surprised | Waking from sleep |
 | sleeping | After 2 minutes idle |
 
+## Custom sprites
+
+Sprites are JSON files defining pixel bitmaps for each mood. Use `#` for filled pixels and `.` for empty. Width and height must be even.
+
+```bash
+claude-cat --sprite my-cat          # load sprites/my-cat.json
+claude-cat --sprite ./my-sprite.json  # load from path
+```
+
+### JSON format
+
+```json
+{
+  "name": "my-cat",
+  "author": "your-name",
+  "description": "A cool cat",
+  "width": 24,
+  "height": 16,
+  "moods": {
+    "idle":      ["..##..", ...],
+    "blink":     ["..##..", ...],
+    "working":   ["..##..", ...],
+    "happy":     ["..##..", ...],
+    "error":     ["..##..", ...],
+    "sleeping":  ["..##..", ...],
+    "surprised": ["..##..", ...]
+  }
+}
+```
+
+All 7 moods are required. Each mood is a list of equal-length strings. Pairs of rows and pairs of columns map to quadrant block characters, so every 2x2 pixel group becomes one terminal character.
+
+### Contributing sprites
+
+Drop your JSON file in `src/claude_cat/sprites/` and open a PR. The `name`, `author`, and `description` fields show up in `claude-cat list-sprites`.
+
 ## How it works
 
 1. `claude-cat install` adds hooks to Claude Code settings
@@ -51,29 +89,31 @@ The cat reacts as Claude Code works -- reading files, editing code, searching, t
 3. Hook mode writes a small JSON state file to the OS temp directory
 4. The display process polls that file and updates the cat's expression
 
+Zero dependencies. Python 3.9+.
+
 ## Rendering
 
-Sprites use Unicode quadrant block characters for 2x resolution in both axes. Each character cell is a 2x2 pixel grid, mapped to one of 16 block elements:
+Each character cell is a 2x2 pixel grid mapped to one of 16 Unicode quadrant block elements:
 
 ```
  ▘▝▀▖▌▞▛▗▚▐▜▄▙▟█ (space)
 ```
 
-Sprites are defined as pixel bitmaps (`#`/`.`) in `src/claude_cat/sprites.py` for easy editing.
+This gives 2x resolution in both axes compared to full-block characters.
 
 ## Development
 
 ```bash
 python3 src/claude_cat/__main__.py          # run directly
 python3 src/claude_cat/__main__.py --demo   # preview expressions
-pip install -e .                            # editable install
+python3 -m pip install -e .                            # editable install
 ```
 
 ## Uninstall
 
 ```bash
 claude-cat uninstall
-pip uninstall claude-cat
+python3 -m pip uninstall claude-cat
 ```
 
 ## License

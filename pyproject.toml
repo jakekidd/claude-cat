@@ -27,3 +27,6 @@ claude-cat = "claude_cat.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+claude_cat = ["sprites/*.json"]

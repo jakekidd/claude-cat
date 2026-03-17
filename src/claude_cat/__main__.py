@@ -12,7 +12,7 @@ from pathlib import Path
 
 # Allow running directly: python3 __main__.py
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from sprites import SPRITES
+import sprites as sprites_mod
 
 VERSION = "0.1.0"
 STATE_FILE = os.path.join(tempfile.gettempdir(), "claude-cat.json")
@@ -76,7 +76,8 @@ def to_blocks(rows):
 
 
 class Cat:
-    def __init__(self):
+    def __init__(self, sprite_data=None):
+        self.sprites = sprite_data or sprites_mod.BUILTIN
         self.mood = "idle"
         self.bubble = ""
         self.blinking = False
@@ -91,7 +92,7 @@ class Cat:
         mood = self.mood
         if self.blinking and mood not in ("sleeping", "surprised"):
             mood = "blink"
-        cat = to_blocks(SPRITES[mood])
+        cat = to_blocks(self.sprites[mood])
         cat_w = len(cat[0]) if cat else 12
 
         out = HOME + HIDE
@@ -248,7 +249,7 @@ def uninstall_hooks():
     print("Removed %d hook(s) from %s" % (removed, settings_path))
 
 
-def watch_mode():
+def watch_mode(sprite_data=None):
     sys.stdout.write(CLR)
     sys.stdout.flush()
 
@@ -256,7 +257,7 @@ def watch_mode():
         with open(STATE_FILE, "w") as f:
             f.write("{}")
 
-    cat = Cat()
+    cat = Cat(sprite_data)
     cat.render()
 
     def cleanup(*_):
@@ -320,11 +321,11 @@ def watch_mode():
         time.sleep(0.1)
 
 
-def demo_mode():
+def demo_mode(sprite_data=None):
     sys.stdout.write(CLR)
     sys.stdout.flush()
 
-    cat = Cat()
+    cat = Cat(sprite_data)
     moods = ["idle", "blink", "working", "happy", "error", "sleeping", "surprised"]
 
     def cleanup(*_):
@@ -348,32 +349,54 @@ def print_help():
         "claude-cat v%s\n"
         "A 1-bit companion cat for Claude Code\n\n"
         "Usage:\n"
-        "  claude-cat              Start the cat (run in a side terminal)\n"
-        "  claude-cat install      Set up Claude Code hooks\n"
-        "  claude-cat uninstall    Remove Claude Code hooks\n"
-        "  claude-cat --demo       Preview all expressions\n"
-        "  claude-cat --version    Show version" % VERSION
+        "  claude-cat                       Start the cat\n"
+        "  claude-cat --sprite <name|path>  Use a custom sprite\n"
+        "  claude-cat install               Set up Claude Code hooks\n"
+        "  claude-cat uninstall             Remove Claude Code hooks\n"
+        "  claude-cat --demo                Preview all expressions\n"
+        "  claude-cat list-sprites          Show available sprites\n"
+        "  claude-cat --version             Show version" % VERSION
     )
 
 
 def main():
     args = sys.argv[1:]
-    cmd = args[0] if args else ""
+
+    # Extract --sprite flag from anywhere in args
+    sprite_name = None
+    filtered = []
+    i = 0
+    while i < len(args):
+        if args[i] == "--sprite" and i + 1 < len(args):
+            sprite_name = args[i + 1]
+            i += 2
+        else:
+            filtered.append(args[i])
+            i += 1
+
+    cmd = filtered[0] if filtered else ""
+
+    # Load sprites (only needed for display modes)
+    sprite_data = None
+    if cmd in ("", "--watch", "watch", "--demo", "demo"):
+        sprite_data = sprites_mod.load(sprite_name)
 
     if cmd in ("--hook", "hook"):
         hook_mode()
     elif cmd in ("--demo", "demo"):
-        demo_mode()
+        demo_mode(sprite_data)
     elif cmd == "install":
         install_hooks()
     elif cmd == "uninstall":
         uninstall_hooks()
+    elif cmd in ("list-sprites", "sprites"):
+        sprites_mod.list_sprites()
     elif cmd in ("--help", "-h", "help"):
         print_help()
     elif cmd in ("--version", "-v"):
         print(VERSION)
     elif cmd in ("", "--watch", "watch"):
-        watch_mode()
+        watch_mode(sprite_data)
     else:
         print("Unknown command: %s" % cmd)
         print_help()
