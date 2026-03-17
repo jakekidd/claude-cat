@@ -1,8 +1,8 @@
 # claude-cat
 
-> NOTE: WIP, the actual 1-bit cat is an ugly placeholder at the moment. PRs for better sprite art very welcome.
+> WIP -- sprite art is placeholder. PRs welcome. Run `python3 view-sprite.py` to preview, `python3 edit-sprite.py` to draw.
 
-A 1-bit pixel art cat that lives in your terminal and reacts to [Claude Code](https://docs.anthropic.com/en/docs/claude-code)'s activity in real time.
+A 1-bit pixel art cat that lives in your terminal and reacts to [Claude Code](https://docs.anthropic.com/en/docs/claude-code)'s activity in real time. Uses inverse video rendering for gap-free display and quadrant block characters for smooth edges.
 
 ## Install
 

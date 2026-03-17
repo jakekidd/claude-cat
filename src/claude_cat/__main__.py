@@ -108,7 +108,22 @@ class Cat:
             out += CLRL + "\n" + CLRL + "\n" + CLRL + "\n"
 
         for line in cat:
-            out += BOLD + line + RST + CLRL + "\n"
+            # Use inverse video for full blocks (fills inter-line gap)
+            i = 0
+            while i < len(line):
+                if line[i] == "\u2588":
+                    j = i
+                    while j < len(line) and line[j] == "\u2588":
+                        j += 1
+                    out += CSI + "7m" + " " * (j - i) + RST
+                    i = j
+                elif line[i] == " ":
+                    out += " "
+                    i += 1
+                else:
+                    out += BOLD + line[i] + RST
+                    i += 1
+            out += CLRL + "\n"
 
         out += CLRL + "\n" + DIM + self.mood + RST + CLRL + "\n" + CLRB
         sys.stdout.write(out)

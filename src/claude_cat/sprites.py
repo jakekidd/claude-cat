@@ -175,11 +175,14 @@ def _sprites_dir():
 def load(name=None):
     """Load sprites by name or path.
 
-    - None -> built-in default
+    - None -> load default.json from sprites dir, fall back to BUILTIN
     - "somefile.json" or "/path/to/file.json" -> load that file
     - "name" -> look for sprites/name.json
     """
     if name is None:
+        default_json = _sprites_dir() / "default.json"
+        if default_json.exists():
+            return _load_file(default_json)
         return dict(BUILTIN)
 
     # Direct file path
