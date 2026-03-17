@@ -534,18 +534,20 @@ class Litter:
                 id_text = DIM + cat.session_id[:16] + RST
                 if cat.state in ("idle", "waiting", "sleeping") and cat.last_tool:
                     id_text += "  " + DIM + "last:" + cat.last_tool + RST
-                # Line 3: last message (width based on terminal)
+                # Line 3: last message (fit to terminal width)
                 msg = ""
                 if cat.last_message:
                     try:
                         term_w = os.get_terminal_size().columns
                     except OSError:
                         term_w = 80
-                    cat_w = len(sprite[0]) if sprite else 14
-                    max_msg = max(10, term_w - cat_w - 4)
-                    msg = cat.last_message[:max_msg]
+                    sprite_w = len(sprite[0]) if sprite else 14
+                    # sprite + 2 gap + message + 1 safety margin
+                    max_msg = max(5, term_w - sprite_w - 4)
                     if len(cat.last_message) > max_msg:
-                        msg += "..."
+                        msg = cat.last_message[:max(2, max_msg - 3)] + "..."
+                    else:
+                        msg = cat.last_message
                 labels = [
                     state_text,
                     line1,

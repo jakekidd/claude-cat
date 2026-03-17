@@ -383,7 +383,7 @@
         "000CCC00CCC000"
       ],
       "mode": "shuffle",
-      "ms": 1000
+      "ms": 2200
     },
     "waiting": {
       "frames": [
@@ -541,7 +541,7 @@
         "0CIIIIB7IIIIC0",
         "000B7A005B7000"
       ],
-      "hold": 0.5
+      "hold": 0.75
     },
     "interrupted": {
       "frame": [
