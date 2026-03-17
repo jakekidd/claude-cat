@@ -186,6 +186,12 @@ class Cat:
         self.last_message = ""
         self.last_user_prompt = ""
         self.transcript_path = ""
+        # Session stats (from transcript)
+        self.total_input = 0
+        self.total_output = 0
+        self.total_cache = 0
+        self.context_k = 0  # last context window size in k tokens
+        self.stats_read = False
         self.last_transcript_read = 0.0
         self.event_count = 0
 
@@ -247,6 +253,48 @@ class Cat:
         except Exception:
             pass
         return ""
+
+    def _read_stats(self, transcript_path):
+        """Sum token usage from transcript for session cost/context display."""
+        try:
+            if not os.path.exists(transcript_path):
+                return
+            total_in = 0
+            total_out = 0
+            total_cache = 0
+            last_ctx = 0
+            with open(transcript_path) as f:
+                for line in f:
+                    try:
+                        entry = json.loads(line)
+                        usage = entry.get("message", {}).get("usage", {})
+                        if usage:
+                            total_in += usage.get("input_tokens", 0)
+                            total_out += usage.get("output_tokens", 0)
+                            total_cache += usage.get("cache_read_input_tokens", 0)
+                            last_ctx = (
+                                usage.get("input_tokens", 0)
+                                + usage.get("cache_read_input_tokens", 0)
+                                + usage.get("cache_creation_input_tokens", 0)
+                            )
+                    except (json.JSONDecodeError, KeyError):
+                        continue
+            self.total_input = total_in
+            self.total_output = total_out
+            self.total_cache = total_cache
+            self.context_k = last_ctx // 1000
+            self.stats_read = True
+        except Exception:
+            pass
+
+    def est_cost(self):
+        """Rough cost estimate using Opus pricing."""
+        # input $15/M, output $75/M, cache read $1.5/M
+        return (
+            self.total_input * 15 / 1_000_000
+            + self.total_output * 75 / 1_000_000
+            + self.total_cache * 1.5 / 1_000_000
+        )
 
     @staticmethod
     def _extract_text(entry):
@@ -453,6 +501,10 @@ class Cat:
         # active: refresh every 2s for last message display
         if active and self.transcript_path and now - self.last_transcript_read > 2.0:
             self._read_last_message(self.transcript_path)
+            # Refresh stats every 30s (full file scan is heavier)
+            if not self.stats_read or now - getattr(self, '_last_stats_read', 0) > 30:
+                self._read_stats(self.transcript_path)
+                self._last_stats_read = now
             self.last_transcript_read = now
             dirty = True
 
@@ -545,6 +597,7 @@ class Litter:
                     if tp:
                         cat.transcript_path = tp
                         cat._read_last_message(tp)
+                        cat._read_stats(tp)
                     # Determine state
                     if ev in ("PostToolUse", "PreToolUse") and age < 30:
                         cat.state = TOOL_STATES.get(tool, "cooking")
@@ -625,6 +678,19 @@ class Litter:
         if cat.state == "idle" and cat.last_tool:
             id_text += "  " + DIM + "last:" + cat.last_tool + RST
 
+        # Stats line: context / cost / tokens
+        stats = ""
+        if cat.stats_read:
+            cost = cat.est_cost()
+            total_tok = cat.total_input + cat.total_output + cat.total_cache
+            if total_tok > 1_000_000:
+                tok_str = "%.1fM tok" % (total_tok / 1_000_000)
+            elif total_tok > 1000:
+                tok_str = "%dk tok" % (total_tok // 1000)
+            else:
+                tok_str = "%d tok" % total_tok
+            stats = DIM + "%dk ctx  $%.2f  %s" % (cat.context_k, cost, tok_str) + RST
+
         raw_msg = cat.last_message or ""
         msg = ""
         if raw_msg:
@@ -643,6 +709,8 @@ class Litter:
         if show_dir:
             labels.append(fg + cwd_short + RST if cwd_short else "")
         labels.append(id_text)
+        if stats:
+            labels.append(stats)
         if msg:
             labels.append(DIM + msg + RST)
 
