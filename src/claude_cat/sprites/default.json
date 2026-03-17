@@ -1,95 +1,378 @@
 {
   "name": "default",
   "author": "claude-cat",
-  "description": "The default cat. Placeholder art -- PRs welcome.",
-  "format": "hex",
-  "width": 14,
-  "height": 7,
-  "moods": {
-    "idle": [
-      "00030000003000",
-      "006CB00006CB00",
-      "00IIIIIIIIII00",
-      "37I12IIII12IB3",
-      "37IIIIB7IIIIB3",
-      "0CIIIIFFIIIIC0",
-      "000B7A005B7000"
-    ],
-    "blink": [
-      "00030000003000",
-      "006CB00006CB00",
-      "00IIIIIIIIII00",
-      "37IIIIIIIIIIB3",
-      "37IFFIB7IFFIB3",
-      "0CIIIIFFIIIIC0",
-      "000B7A005B7000"
-    ],
-    "working": [
-      "00030000003000",
-      "006CB00006CB00",
-      "00IIIIIIIIII00",
-      "37I50IIII50IB3",
-      "37IIII96IIIIB3",
-      "0CIIIIFFIIIIC0",
-      "000B7A005B7000"
-    ],
-    "happy": [
-      "00030000003000",
-      "006CB00006CB00",
-      "00IIIIIIIIII00",
-      "CDI87IIIIB4IEC",
-      "CDIIII96IIIIEC",
-      "0CIIIIFFIIIIC0",
-      "000B7A005B7000"
-    ],
-    "error": [
-      "00030000003000",
-      "006CB00006CB00",
-      "00IIIIIII77I00",
-      "6DIB7IIIIB7IE9",
-      "6DIIIIB7IIIIE9",
-      "06IIIIFFIIII90",
-      "000B7A005B7000"
-    ],
-    "sleeping": [
-      "00030000003000",
-      "006CB00006CB00",
-      "00IIIIIIIIII00",
-      "37IIIIIIIIIIB3",
-      "37IFFIFFIFFIB3",
-      "0CIIIIFFIIIIC0",
-      "000B7A005B7000"
-    ],
-    "surprised": [
-      "00030000003000",
-      "006CB00006CB00",
-      "00ICCIIIICCI00",
-      "37I5AIIII5AIB3",
-      "37IIIICCIIIIB3",
-      "0CIIIIIIIIIIC0",
-      "000B7A005B7000"
-    ],
-    "interrupted": [
-      "00030000003000",
-      "006CB00006CB00",
-      "00IIIIIIIIII00",
-      "37I12IIII12IB3",
-      "37IIIIB7IIIIB3",
-      "0CIIIIFFIIIIC0",
-      "000B7A005B7000"
-    ]
-  },
-  "eyes": {
+  "format": "states",
+  "states": {
     "idle": {
-      "slots": [[3,3], [3,4], [3,9], [3,10]],
-      "frames": ["1212", "I1I1", "1212", "2I2I"],
+      "frames": [
+        [
+          "00030000003000",
+          "006CB00006CB00",
+          "00IIIIIIIIII00",
+          "37I12IIII12IB3",
+          "37IIIIB7IIIIB3",
+          "0CIIIIFFIIIIC0",
+          "000B7A005B7000"
+        ],
+        [
+          "00030000003000",
+          "006CB00006CB00",
+          "00IIIIIIIIII00",
+          "37II1IIIII1IB3",
+          "37IIIIB7IIIIB3",
+          "0CIIIIFFIIIIC0",
+          "000B7A005B7000"
+        ],
+        [
+          "00030000003000",
+          "006CB00006CB00",
+          "00IIIIIIIIII00",
+          "37I12IIII12IB3",
+          "37IIIIB7IIIIB3",
+          "0CIIIIFFIIIIC0",
+          "000B7A005B7000"
+        ],
+        [
+          "00030000003000",
+          "006CB00006CB00",
+          "00IIIIIIIIII00",
+          "37I2IIIII2IIB3",
+          "37IIIIB7IIIIB3",
+          "0CIIIIFFIIIIC0",
+          "000B7A005B7000"
+        ]
+      ],
+      "blink": [
+        "00030000003000",
+        "006CB00006CB00",
+        "00IIIIIIIIII00",
+        "37IIIIIIIIIIB3",
+        "37IIIIB7IIIIB3",
+        "0CIIIIFFIIIIC0",
+        "000B7A005B7000"
+      ],
+      "mode": "shuffle",
       "ms": 2000
     },
-    "working": {
-      "slots": [[3,3], [3,4], [3,9], [3,10]],
-      "_comment": "slow scan right-to-left (cat reads L-to-R). TODO: random-walk wave function for organic movement",
-      "frames": ["0505", "0A0A", "5050", "A0A0"],
+    "reading": {
+      "frames": [
+        [
+          "00030000003000",
+          "006CB00006CB00",
+          "00IIIIIIIIII00",
+          "37I05IIII05IB3",
+          "37IIIIB7IIIIB3",
+          "0CIIIIFFIIIIC0",
+          "000B7A005B7000"
+        ],
+        [
+          "00030000003000",
+          "006CB00006CB00",
+          "00IIIIIIIIII00",
+          "37I0AIIII0AIB3",
+          "37IIIIB7IIIIB3",
+          "0CIIIIFFIIIIC0",
+          "000B7A005B7000"
+        ],
+        [
+          "00030000003000",
+          "006CB00006CB00",
+          "00IIIIIIIIII00",
+          "37I50IIII50IB3",
+          "37IIIIB7IIIIB3",
+          "0CIIIIFFIIIIC0",
+          "000B7A005B7000"
+        ],
+        [
+          "00030000003000",
+          "006CB00006CB00",
+          "00IIIIIIIIII00",
+          "37IA0IIIIA0IB3",
+          "37IIIIB7IIIIB3",
+          "0CIIIIFFIIIIC0",
+          "000B7A005B7000"
+        ]
+      ],
+      "blink": [
+        "00030000003000",
+        "006CB00006CB00",
+        "00IIIIIIIIII00",
+        "37IIIIIIIIIIB3",
+        "37IIIIB7IIIIB3",
+        "0CIIIIFFIIIIC0",
+        "000B7A005B7000"
+      ],
+      "mode": "loop",
       "ms": 200
+    },
+    "cooking": {
+      "frames": [
+        [
+          "00030000003000",
+          "006CB00006CB00",
+          "00IIIIIIIIII00",
+          "37I50IIII50IB3",
+          "37IIIIB7IIIIB3",
+          "0CIIIIFFIIIIC0",
+          "000B7A005B7000"
+        ],
+        [
+          "00030000003000",
+          "006CB00006CB00",
+          "00IIIIIIIIII00",
+          "37I12IIII12IB3",
+          "37IIIIB7IIIIB3",
+          "0CIIIIFFIIIIC0",
+          "000B7A005B7000"
+        ],
+        [
+          "00030000003000",
+          "006CB00006CB00",
+          "00IIIIIIIIII00",
+          "37I50IIII50IB3",
+          "37IIIIB7IIIIB3",
+          "0CIIIIFFIIIIC0",
+          "000B7A005B7000"
+        ]
+      ],
+      "blink": [
+        "00030000003000",
+        "006CB00006CB00",
+        "00IIIIIIIIII00",
+        "37IIIIIIIIIIB3",
+        "37IIIIB7IIIIB3",
+        "0CIIIIFFIIIIC0",
+        "000B7A005B7000"
+      ],
+      "mode": "shuffle",
+      "ms": 1500
+    },
+    "hunting": {
+      "frames": [
+        [
+          "00030000003000",
+          "006CB00006CB00",
+          "00IIIIIIIIII00",
+          "37II1IIIII1IB3",
+          "37IIIIB7IIIIB3",
+          "0CIIIIFFIIIIC0",
+          "000B7A005B7000"
+        ],
+        [
+          "00030000003000",
+          "006CB00006CB00",
+          "00IIIIIIIIII00",
+          "37I12IIII12IB3",
+          "37IIIIB7IIIIB3",
+          "0CIIIIFFIIIIC0",
+          "000B7A005B7000"
+        ],
+        [
+          "00030000003000",
+          "006CB00006CB00",
+          "00IIIIIIIIII00",
+          "37I2IIIII2IIB3",
+          "37IIIIB7IIIIB3",
+          "0CIIIIFFIIIIC0",
+          "000B7A005B7000"
+        ],
+        [
+          "00030000003000",
+          "006CB00006CB00",
+          "00IIIIIIIIII00",
+          "37I12IIII12IB3",
+          "37IIIIB7IIIIB3",
+          "0CIIIIFFIIIIC0",
+          "000B7A005B7000"
+        ]
+      ],
+      "blink": [
+        "00030000003000",
+        "006CB00006CB00",
+        "00IIIIIIIIII00",
+        "37IIIIIIIIIIB3",
+        "37IIIIB7IIIIB3",
+        "0CIIIIFFIIIIC0",
+        "000B7A005B7000"
+      ],
+      "mode": "loop",
+      "ms": 300
+    },
+    "researching": {
+      "frames": [
+        [
+          "00030000003000",
+          "006CB00006CB00",
+          "00IIIIIIIIII00",
+          "37I05IIII05IB3",
+          "37IIIIB7IIIIB3",
+          "0CIIIIFFIIIIC0",
+          "000B7A005B7000"
+        ],
+        [
+          "00030000003000",
+          "006CB00006CB00",
+          "00IIIIIIIIII00",
+          "37I0AIIII0AIB3",
+          "37IIIIB7IIIIB3",
+          "0CIIIIFFIIIIC0",
+          "000B7A005B7000"
+        ],
+        [
+          "00030000003000",
+          "006CB00006CB00",
+          "00IIIIIIIIII00",
+          "37I50IIII50IB3",
+          "37IIIIB7IIIIB3",
+          "0CIIIIFFIIIIC0",
+          "000B7A005B7000"
+        ],
+        [
+          "00030000003000",
+          "006CB00006CB00",
+          "00IIIIIIIIII00",
+          "37IA0IIIIA0IB3",
+          "37IIIIB7IIIIB3",
+          "0CIIIIFFIIIIC0",
+          "000B7A005B7000"
+        ]
+      ],
+      "blink": [
+        "00030000003000",
+        "006CB00006CB00",
+        "00IIIIIIIIII00",
+        "37IIIIIIIIIIB3",
+        "37IIIIB7IIIIB3",
+        "0CIIIIFFIIIIC0",
+        "000B7A005B7000"
+      ],
+      "mode": "loop",
+      "ms": 400
+    },
+    "thinking": {
+      "frames": [
+        [
+          "00030000003000",
+          "006CB00006CB00",
+          "00IIIIIIIIII00",
+          "37I12IIII12IB3",
+          "37IIIIB7IIIIB3",
+          "0CIIIIFFIIIIC0",
+          "000B7A005B7000"
+        ],
+        [
+          "00030000003000",
+          "006CB00006CB00",
+          "00IIIIIIIIII00",
+          "37IC0IIIIC0IB3",
+          "37IIIIB7IIIIB3",
+          "0CIIIIFFIIIIC0",
+          "000B7A005B7000"
+        ],
+        [
+          "00030000003000",
+          "006CB00006CB00",
+          "00IIIIIIIIII00",
+          "37I12IIII12IB3",
+          "37IIIIB7IIIIB3",
+          "0CIIIIFFIIIIC0",
+          "000B7A005B7000"
+        ]
+      ],
+      "blink": [
+        "00030000003000",
+        "006CB00006CB00",
+        "00IIIIIIIIII00",
+        "37IIIIIIIIIIB3",
+        "37IIIIB7IIIIB3",
+        "0CIIIIFFIIIIC0",
+        "000B7A005B7000"
+      ],
+      "mode": "shuffle",
+      "ms": 3000
+    },
+    "hacking": {
+      "frames": [
+        [
+          "00030000003000",
+          "006CB00006CB00",
+          "00IIIIIIIIII00",
+          "37I50IIII50IB3",
+          "37IIIIB7IIIIB3",
+          "0CIIIIFFIIIIC0",
+          "000B7A005B7000"
+        ],
+        [
+          "00030000003000",
+          "006CB00006CB00",
+          "00IIIIIIIIII00",
+          "37IA0IIIIA0IB3",
+          "37IIIIB7IIIIB3",
+          "0CIIIIFFIIIIC0",
+          "000B7A005B7000"
+        ]
+      ],
+      "blink": [
+        "00030000003000",
+        "006CB00006CB00",
+        "00IIIIIIIIII00",
+        "37IIIIIIIIIIB3",
+        "37IIIIB7IIIIB3",
+        "0CIIIIFFIIIIC0",
+        "000B7A005B7000"
+      ],
+      "mode": "loop",
+      "ms": 800
+    }
+  },
+  "reactions": {
+    "happy": {
+      "frame": [
+        "00030000003000",
+        "006CB00006CB00",
+        "00IIIIIIIIII00",
+        "CDI87IIIIB4IEC",
+        "CDIIII96IIIIEC",
+        "0CIIIIFFIIIIC0",
+        "000B7A005B7000"
+      ],
+      "hold": 4.0
+    },
+    "error": {
+      "frame": [
+        "00030000003000",
+        "006CB00006CB00",
+        "00IIIIIII77I00",
+        "6DIB7IIIIB7IE9",
+        "6DIIIIB7IIIIE9",
+        "06IIIIFFIIII90",
+        "000B7A005B7000"
+      ],
+      "hold": 4.0
+    },
+    "surprised": {
+      "frame": [
+        "00030000003000",
+        "006CB00006CB00",
+        "00ICCIIIICCI00",
+        "37I5AIIII5AIB3",
+        "37IIIICCIIIIB3",
+        "0CIIIIIIIIIIC0",
+        "000B7A005B7000"
+      ],
+      "hold": 0.5
+    },
+    "interrupted": {
+      "frame": [
+        "00030000003000",
+        "006CB00006CB00",
+        "00IIIIIIIIII00",
+        "37I12IIII12IB3",
+        "37IIIIB7IIIIB3",
+        "0CIIIIFFIIIIC0",
+        "000B7A005B7000"
+      ],
+      "hold": 10.0
     }
   }
 }
