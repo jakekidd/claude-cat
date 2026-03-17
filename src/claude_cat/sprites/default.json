@@ -42,6 +42,7 @@
           "000B7A005B7000"
         ]
       ],
+      "labels": ["center", "look-right", "center-2", "look-left"],
       "blink": [
         "00030000003000",
         "006CB00006CB00",

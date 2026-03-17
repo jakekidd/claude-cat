@@ -174,7 +174,10 @@ class Editor:
             return "hold"
         cfg = self.data["states"][name]
         n_frames = len(cfg.get("frames", []))
+        labels = cfg.get("labels", [])
         if idx < n_frames:
+            if idx < len(labels):
+                return labels[idx]
             return str(idx)
         if idx == n_frames and "blink" in cfg:
             return "blink"
@@ -242,20 +245,21 @@ class Editor:
                 out += DIM + " " + tag + " " + RST + " "
         out += CSI + "K\n"
 
-        # Frame pips
+        # Frame pips with labels
         out += "  "
         show_idx = self.play_frame % max(1, len(self.data["states"].get(name, {}).get("frames", []))) if self.playing else self.frame_idx
         for i in range(n_frames):
             label = self._frame_label(i)
-            if (self.playing and kind == "state" and i == show_idx) or (not self.playing and i == self.frame_idx):
-                out += CSI + "33m\u25cf" + RST + " "
+            is_active = (self.playing and kind == "state" and i == show_idx) or (not self.playing and i == self.frame_idx)
+            if is_active:
+                out += CSI + "33m\u25cf " + label + RST + "  "
             else:
-                out += DIM + "\u25cb" + RST + " "
+                out += DIM + "\u25cb " + label + RST + "  "
         if kind == "state":
             mode = self.data["states"][name].get("mode", "?")
-            out += "  " + DIM + "%s %dms" % (mode, ms) + RST
+            out += " " + DIM + "%s %dms" % (mode, ms) + RST
         else:
-            out += "  " + DIM + "hold %.1fs" % (ms / 1000.0) + RST
+            out += " " + DIM + "hold %.1fs" % (ms / 1000.0) + RST
         out += CSI + "K\n\n"
 
         # Grid + preview
