@@ -43,8 +43,9 @@ TOOL_LABELS = {
     "Skill": "casting",
 }
 
-# Warm palette for litter mode — orange/amber/rust family
+# Warm palette for litter mode — orange/amber/rust family, shuffled each boot
 PALETTE = [208, 209, 215, 216, 173, 179, 180, 137, 172, 214]
+random.shuffle(PALETTE)
 
 # ANSI sequences
 CSI = "\033["
@@ -152,7 +153,7 @@ class Cat:
 
     def _resolve_sprite(self):
         mood = self.mood
-        if self.blinking and mood not in ("sleeping", "surprised"):
+        if self.blinking and mood not in ("sleeping", "surprised", "interrupted"):
             mood = "blink"
         return self._apply_eyes(mood, self.sprites.get(mood, []))
 
@@ -299,7 +300,7 @@ class Litter:
             if (
                 not cat.blinking
                 and now >= cat.next_blink
-                and cat.mood not in ("sleeping", "surprised")
+                and cat.mood not in ("sleeping", "surprised", "interrupted")
             ):
                 cat.blinking = True
                 cat.blink_end = now + 0.15
@@ -324,10 +325,16 @@ class Litter:
                     cat.next_eye_shift = now + 2.0
 
             # Sleep after 2 minutes idle
-            if cat.mood != "sleeping" and now - cat.last_event > 120:
-                cat.mood = "sleeping"
-                cat.bubble = "zzz"
-                cat.bubble_end = now + 3
+            if cat.mood not in ("sleeping", "interrupted") and now - cat.last_event > 120:
+                if cat.mood == "working":
+                    # Was mid-task when session went quiet
+                    cat.mood = "interrupted"
+                    cat.bubble = "interrupted"
+                    cat.bubble_end = now + 5
+                else:
+                    cat.mood = "sleeping"
+                    cat.bubble = "zzz"
+                    cat.bubble_end = now + 3
                 cat.overlay = "plug"
                 cat.overlay_end = now + OVERLAYS["plug"]["duration"]
                 dirty = True
@@ -559,7 +566,7 @@ def target_mode(session_id, sprite_data=None):
         if (
             not cat.blinking
             and now >= cat.next_blink
-            and cat.mood not in ("sleeping", "surprised")
+            and cat.mood not in ("sleeping", "surprised", "interrupted")
         ):
             cat.blinking = True
             cat.blink_end = now + 0.15
@@ -582,10 +589,15 @@ def target_mode(session_id, sprite_data=None):
             else:
                 cat.next_eye_shift = now + 2.0
 
-        if cat.mood != "sleeping" and now - cat.last_event > 120:
-            cat.mood = "sleeping"
-            cat.bubble = "zzz"
-            cat.bubble_end = now + 3
+        if cat.mood not in ("sleeping", "interrupted") and now - cat.last_event > 120:
+            if cat.mood == "working":
+                cat.mood = "interrupted"
+                cat.bubble = "interrupted"
+                cat.bubble_end = now + 5
+            else:
+                cat.mood = "sleeping"
+                cat.bubble = "zzz"
+                cat.bubble_end = now + 3
             cat.overlay = "plug"
             cat.overlay_end = now + OVERLAYS["plug"]["duration"]
             dirty = True
@@ -613,7 +625,7 @@ def demo_mode(sprite_data=None):
     sys.stdout.flush()
 
     cat = Cat(sprite_data)
-    moods = ["idle", "blink", "working", "happy", "error", "sleeping", "surprised"]
+    moods = ["idle", "blink", "working", "happy", "error", "sleeping", "surprised", "interrupted"]
 
     def cleanup(*_):
         sys.stdout.write(SHOW + "\n")

@@ -37,7 +37,7 @@ import json
 import os
 from pathlib import Path
 
-REQUIRED_MOODS = ["idle", "blink", "working", "happy", "error", "sleeping", "surprised"]
+REQUIRED_MOODS = ["idle", "blink", "working", "happy", "error", "sleeping", "surprised", "interrupted"]
 
 VALID_CHARS = set("0123456789ABCDEFabcdefI")
 

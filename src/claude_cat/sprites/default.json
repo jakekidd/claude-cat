@@ -68,6 +68,15 @@
       "37IIIICCIIIIB3",
       "0CIIIIIIIIIIC0",
       "000B7A005B7000"
+    ],
+    "interrupted": [
+      "00030000003000",
+      "006CB00006CB00",
+      "00IIIIIIIIII00",
+      "37I12IIII12IB3",
+      "37IIIIB7IIIIB3",
+      "0CIIIIFFIIIIC0",
+      "000B7A005B7000"
     ]
   },
   "eyes": {
