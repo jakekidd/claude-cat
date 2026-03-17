@@ -81,9 +81,29 @@ def render_hex_line(hex_row):
     return out
 
 
+# Event-driven overlays rendered beside the cat
+OVERLAYS = {
+    "bulb": {
+        "art": [" \u259e\u259a", " \u259c\u259b"],
+        "offset": (-1, 14),
+        "duration": 3.0,
+    },
+    "plug": {
+        "art": [" \u2596\u2597", " \u259c\u259b"],
+        "offset": (-1, 14),
+        "duration": 4.0,
+    },
+}
+
+
 class Cat:
     def __init__(self, sprite_data=None):
-        self.sprites = sprite_data or sprites_mod.BUILTIN
+        if sprite_data and isinstance(sprite_data, dict) and "moods" in sprite_data:
+            self.sprites = sprite_data["moods"]
+            self.eyes_config = sprite_data.get("eyes", {})
+        else:
+            self.sprites = sprite_data or {}
+            self.eyes_config = {}
         self.mood = "idle"
         self.bubble = ""
         self.blinking = False
@@ -93,12 +113,33 @@ class Cat:
         self.next_blink = time.time() + random.uniform(2, 7)
         self.blink_end = 0.0
         self.bubble_end = 0.0
+        # Eye animation
+        self.eye_frame = 0
+        self.next_eye_shift = time.time() + random.uniform(1.0, 3.0)
+        # Overlays
+        self.overlay = None
+        self.overlay_end = 0.0
+
+    def _apply_eyes(self, mood, rows):
+        cfg = self.eyes_config.get(mood)
+        if not cfg:
+            return rows
+        frames = cfg["frames"]
+        if not frames:
+            return rows
+        frame = frames[self.eye_frame % len(frames)]
+        slots = cfg["slots"]
+        patched = [list(r) for r in rows]
+        for i, (r, c) in enumerate(slots):
+            if i < len(frame) and r < len(patched) and c < len(patched[r]):
+                patched[r][c] = frame[i]
+        return ["".join(r) for r in patched]
 
     def render(self):
         mood = self.mood
         if self.blinking and mood not in ("sleeping", "surprised"):
             mood = "blink"
-        cat = self.sprites[mood]
+        cat = self._apply_eyes(mood, self.sprites.get(mood, []))
         cat_w = len(cat[0]) if cat else 12
 
         out = HOME + HIDE
@@ -116,6 +157,16 @@ class Cat:
         for line in cat:
             out += render_hex_line(line) + CLRL + "\n"
 
+        # Overlay (absolute cursor positioning)
+        if self.overlay and self.overlay in OVERLAYS:
+            ov = OVERLAYS[self.overlay]
+            base_row = 4  # sprite starts at row 4 (after 3 bubble lines)
+            for i, art_line in enumerate(ov["art"]):
+                r = base_row + ov["offset"][0] + i
+                c = ov["offset"][1] + 1
+                if r > 0:
+                    out += CSI + "%d;%dH" % (r, c) + BOLD + art_line + RST
+
         out += CLRL + "\n" + DIM + self.mood + RST + CLRL + "\n" + CLRB
         sys.stdout.write(out)
         sys.stdout.flush()
@@ -128,12 +179,15 @@ class Cat:
             time.sleep(0.4)
             self.mood = "idle"
 
+        prev_mood = self.mood
         ev = data.get("event", "")
         tool = data.get("tool", "")
 
         if ev in ("Stop", "SubagentStop"):
             self.mood = "happy"
             self.bubble = "done!" if ev == "Stop" else "returned"
+            self.overlay = "bulb"
+            self.overlay_end = time.time() + OVERLAYS["bulb"]["duration"]
         elif ev == "PostToolUseFailure":
             self.mood = "error"
             self.bubble = "oops"
@@ -146,6 +200,11 @@ class Cat:
         else:
             self.mood = "idle"
             self.bubble = ev.lower() or ""
+
+        # Reset eyes on mood change
+        if self.mood != prev_mood:
+            self.eye_frame = 0
+            self.next_eye_shift = time.time() + random.uniform(1.0, 3.0)
 
         self.last_event = time.time()
         self.bubble_end = time.time() + 4
@@ -306,11 +365,33 @@ def watch_mode(sprite_data=None):
             cat.blinking = False
             dirty = True
 
+        # Eye animation
+        if (
+            not cat.blinking
+            and now >= cat.next_eye_shift
+            and cat.mood not in ("sleeping", "blink")
+        ):
+            cfg = cat.eyes_config.get(cat.mood)
+            if cfg and cfg.get("frames"):
+                cat.eye_frame = (cat.eye_frame + 1) % len(cfg["frames"])
+                cat.next_eye_shift = now + cfg.get("ms", 2000) / 1000.0
+                dirty = True
+            else:
+                cat.next_eye_shift = now + 2.0
+
         # Sleep after 2 minutes idle
         if cat.mood != "sleeping" and now - cat.last_event > 120:
             cat.mood = "sleeping"
             cat.bubble = "zzz"
             cat.bubble_end = now + 3
+            cat.overlay = "plug"
+            cat.overlay_end = now + OVERLAYS["plug"]["duration"]
+            dirty = True
+
+        # Expire overlay
+        if cat.overlay and cat.overlay_end and now >= cat.overlay_end:
+            cat.overlay = None
+            cat.overlay_end = 0
             dirty = True
 
         # Clear bubble

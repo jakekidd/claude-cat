@@ -199,7 +199,7 @@ def save(grid, path):
         try:
             with open(path) as f:
                 existing = json.load(f)
-            for key in ("name", "author", "description"):
+            for key in ("name", "author", "description", "eyes"):
                 if key in existing:
                     data[key] = existing[key]
         except Exception:

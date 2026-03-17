@@ -6,7 +6,8 @@ from claude_cat.sprites import load
 from claude_cat.__main__ import render_hex_line
 
 name = sys.argv[1] if len(sys.argv) > 1 else None
-sprites = load(name)
+data = load(name)
+sprites = data["moods"] if isinstance(data, dict) and "moods" in data else data
 
 moods = ["idle", "blink", "working", "happy", "error", "sleeping", "surprised"]
 for mood in moods:

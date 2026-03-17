@@ -11,7 +11,7 @@
       "006CB00006CB00",
       "00IIIIIIIIII00",
       "37I12IIII12IB3",
-      "37IIII96IIIIB3",
+      "37IIIIB7IIIIB3",
       "0CIIIIFFIIIIC0",
       "000B7A005B7000"
     ],
@@ -20,7 +20,7 @@
       "006CB00006CB00",
       "00IIIIIIIIII00",
       "37IIIIIIIIIIB3",
-      "37IIII96IIIIB3",
+      "37IFFIB7IFFIB3",
       "0CIIIIFFIIIIC0",
       "000B7A005B7000"
     ],
@@ -28,7 +28,7 @@
       "00030000003000",
       "006CB00006CB00",
       "00IIIIIIIIII00",
-      "37I00IIII00IB3",
+      "37I50IIII50IB3",
       "37IIII96IIIIB3",
       "0CIIIIFFIIIIC0",
       "000B7A005B7000"
@@ -37,37 +37,49 @@
       "00030000003000",
       "006CB00006CB00",
       "00IIIIIIIIII00",
-      "37ICCIIIICCIB3",
-      "37IIII96IIIIB3",
+      "CDI87IIIIB4IEC",
+      "CDIIII96IIIIEC",
       "0CIIIIFFIIIIC0",
       "000B7A005B7000"
     ],
     "error": [
       "00030000003000",
       "006CB00006CB00",
-      "00IIIIIIIIII00",
-      "37I69IIII69IB3",
-      "37IIII96IIIIB3",
-      "0CIIIIFFIIIIC0",
+      "00IIIIIII77I00",
+      "6DIB7IIIIB7IE9",
+      "6DIIIIB7IIIIE9",
+      "06IIIIFFIIII90",
       "000B7A005B7000"
     ],
     "sleeping": [
       "00030000003000",
       "006CB00006CB00",
       "00IIIIIIIIII00",
-      "37I33IIII33IB3",
-      "37IIII96IIIIB3",
+      "37IIIIIIIIIIB3",
+      "37IFFIFFIFFIB3",
       "0CIIIIFFIIIIC0",
       "000B7A005B7000"
     ],
     "surprised": [
       "00030000003000",
       "006CB00006CB00",
-      "00I00IIII00I00",
-      "37I00IIII00IB3",
-      "37IIII96IIIIB3",
-      "0CIIIIFFIIIIC0",
+      "00ICCIIIICCI00",
+      "37I5AIIII5AIB3",
+      "37IIIICCIIIIB3",
+      "0CIIIIIIIIIIC0",
       "000B7A005B7000"
     ]
+  },
+  "eyes": {
+    "idle": {
+      "slots": [[3,3], [3,4], [3,9], [3,10]],
+      "frames": ["1212", "I1I1", "1212", "2I2I"],
+      "ms": 2000
+    },
+    "working": {
+      "slots": [[3,3], [3,4], [3,9], [3,10]],
+      "frames": ["5050", "0505", "5050", "A0A0"],
+      "ms": 1200
+    }
   }
 }

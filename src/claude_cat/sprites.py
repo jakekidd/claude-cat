@@ -22,6 +22,13 @@ JSON format:
   "moods": {
     "idle": ["00III00", ...],
     ...
+  },
+  "eyes": {
+    "idle": {
+      "slots": [[3,3], [3,4], [3,8], [3,9]],
+      "frames": ["1212", "2I2I", "I1I1"],
+      "ms": 2000
+    }
   }
 }
 """
@@ -67,7 +74,7 @@ def load(name=None):
         default_json = _sprites_dir() / "default.json"
         if default_json.exists():
             return _load_file(default_json)
-        return {}
+        return {"moods": {}, "eyes": {}}
 
     path = Path(name)
     if path.suffix == ".json" and path.exists():
@@ -118,7 +125,20 @@ def _load_file(path):
             print("Sprite '%s' has inconsistent row widths" % mood)
             raise SystemExit(1)
 
-    return moods
+    # Load eyes config (optional)
+    eyes = data.get("eyes", {})
+    for mood_name, cfg in eyes.items():
+        if mood_name not in moods:
+            print("Eyes config references unknown mood: %s" % mood_name)
+            raise SystemExit(1)
+        slots = cfg.get("slots", [])
+        frames = cfg.get("frames", [])
+        for frame in frames:
+            if len(frame) != len(slots):
+                print("Eyes '%s': frame length %d != slot count %d" % (mood_name, len(frame), len(slots)))
+                raise SystemExit(1)
+
+    return {"moods": moods, "eyes": eyes}
 
 
 def list_sprites():
