@@ -148,49 +148,60 @@ class Cat:
         self.last_mtime = 0.0
         self.last_tool = ""
         self.last_message = ""
+        self.last_user_prompt = ""
         self.transcript_path = ""
         self.last_transcript_read = 0.0
         self.event_count = 0
 
     def _read_last_message(self, transcript_path):
-        """Try to read the last assistant message from the transcript JSONL."""
+        """Read the last assistant or user message from transcript JSONL."""
         try:
             if not os.path.exists(transcript_path):
                 return
-            # Read last few lines (tail) to find the latest assistant message
             with open(transcript_path, "rb") as f:
-                # Seek to end, scan backwards for last few lines
                 f.seek(0, 2)
                 size = f.tell()
-                # Read last 8KB at most
-                chunk = min(8192, size)
+                chunk = min(16384, size)
                 f.seek(size - chunk)
                 lines = f.read().decode("utf-8", errors="ignore").strip().split("\n")
 
-            # Scan backwards for last assistant text
+            # Scan backwards — find last assistant text AND last user text
+            found_assistant = False
+            found_user = False
             for line in reversed(lines):
+                if found_assistant and found_user:
+                    break
                 try:
                     entry = json.loads(line)
-                    if entry.get("type") == "assistant" and entry.get("message", {}).get("content"):
-                        content = entry["message"]["content"]
-                        # Content can be a list of blocks or a string
-                        if isinstance(content, list):
-                            for block in reversed(content):
-                                if isinstance(block, dict) and block.get("type") == "text":
-                                    text = block.get("text", "").strip()
-                                    if text:
-                                        # First line, truncated
-                                        first = text.split("\n")[0]
-                                        self.last_message = first[:60] + ("..." if len(first) > 60 else "")
-                                        return
-                        elif isinstance(content, str) and content.strip():
-                            first = content.strip().split("\n")[0]
-                            self.last_message = first[:60] + ("..." if len(first) > 60 else "")
-                            return
+                    msg_type = entry.get("type", "")
+                    if not found_assistant and msg_type == "assistant":
+                        text = self._extract_text(entry)
+                        if text:
+                            self.last_message = text
+                            found_assistant = True
+                    if not found_user and msg_type == "human":
+                        text = self._extract_text(entry)
+                        if text:
+                            self.last_user_prompt = text
+                            found_user = True
                 except (json.JSONDecodeError, KeyError):
                     continue
         except Exception:
             pass
+
+    @staticmethod
+    def _extract_text(entry):
+        """Extract first line of text from a transcript entry."""
+        content = entry.get("message", {}).get("content", "")
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    text = block.get("text", "").strip()
+                    if text:
+                        return text.split("\n")[0]
+        elif isinstance(content, str) and content.strip():
+            return content.strip().split("\n")[0]
+        return ""
 
     def _get_sprite(self):
         """Get the current sprite to display."""
@@ -346,18 +357,19 @@ class Cat:
             self.frame_idx = 0
             dirty = True
 
-        # Refresh transcript for active cats every 2s
+        # Refresh transcript: 2s while active, 5s while waiting/cooking
+        refresh_interval = 5.0 if self.state in ("waiting", "cooking") else 2.0
         if (
             self.transcript_path
-            and self.state not in ("idle", "waiting", "sleeping")
-            and now - self.last_transcript_read > 2.0
+            and self.state not in ("idle", "sleeping")
+            and now - self.last_transcript_read > refresh_interval
         ):
             self._read_last_message(self.transcript_path)
             self.last_transcript_read = now
             dirty = True
 
-        # Idle/waiting for 2 min -> sleeping
-        if self.state in ("idle", "waiting") and not self.reaction and now - self.last_event > 120:
+        # Idle for 2 min -> sleeping (waiting NEVER sleeps — it needs you)
+        if self.state == "idle" and not self.reaction and now - self.last_event > 120:
             self.state = "sleeping"
             self.frame_idx = 0
             self.overlay = "plug"
@@ -454,9 +466,14 @@ class Litter:
                     cat.cwd = data.get("cwd", "")
                     cat.last_mtime = os.path.getmtime(path)
                     cat.last_raw = json.dumps(data)
-                    # Read transcript for last message
+                    # Restore waiting state if last event was Stop
+                    ev = data.get("event", "")
+                    if ev == "Stop":
+                        cat.state = "waiting"
+                    # Read transcript for last message + user prompt
                     tp = data.get("transcript_path", "")
                     if tp:
+                        cat.transcript_path = tp
                         cat._read_last_message(tp)
                 except Exception:
                     pass
@@ -534,9 +551,14 @@ class Litter:
                 id_text = DIM + cat.session_id[:16] + RST
                 if cat.state in ("idle", "waiting", "sleeping") and cat.last_tool:
                     id_text += "  " + DIM + "last:" + cat.last_tool + RST
-                # Line 3: last message (fit to terminal width)
+                # Line 3: last message or user prompt (fit to terminal width)
+                raw_msg = ""
+                if cat.state == "waiting" and cat.last_user_prompt:
+                    raw_msg = "> " + cat.last_user_prompt
+                elif cat.last_message:
+                    raw_msg = cat.last_message
                 msg = ""
-                if cat.last_message:
+                if raw_msg:
                     try:
                         term_w = os.get_terminal_size().columns
                     except OSError:
@@ -544,10 +566,10 @@ class Litter:
                     sprite_w = len(sprite[0]) if sprite else 14
                     # sprite + 2 gap + message + 1 safety margin
                     max_msg = max(5, term_w - sprite_w - 4)
-                    if len(cat.last_message) > max_msg:
-                        msg = cat.last_message[:max(2, max_msg - 3)] + "..."
+                    if len(raw_msg) > max_msg:
+                        msg = raw_msg[:max(2, max_msg - 3)] + "..."
                     else:
-                        msg = cat.last_message
+                        msg = raw_msg
                 labels = [
                     state_text,
                     line1,
