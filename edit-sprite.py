@@ -1,44 +1,58 @@
 #!/usr/bin/env python3
-"""Sprite editor for claude-cat.
+"""Unified sprite editor for claude-cat.
 
-Cursor moves in character space. Each cell stores one hex char
-from the extended hex palette (0-F + I). Not true hex -- 17
-symbols total.
+Edit states (animated, multi-frame) and reactions (static, single frame).
+Replaces the old mood editor and eye editor.
 
 Controls:
-  WASD / arrows   Move cursor
-  SPACE            Paint brush (toggle: same char clears to empty)
-  [ / ]            Cycle brush
-  R                Toggle row (fill/clear)
-  X                Clear row
-  F                Fill row with current brush
-  1-7 / TAB        Switch mood
-  Y                Copy current mood
-  P                Paste copied mood into current
-  S                Save to JSON
-  Q / ESC          Quit
+  -- Navigation --
+  TAB / SHIFT+TAB   Next/prev state or reaction
+  < / >             Prev/next frame within current state
+  ENTER             Add new frame after current (duplicates it)
+  BACKSPACE         Delete current frame
+
+  -- Drawing --
+  WASD / arrows     Move cursor
+  SPACE             Paint brush (toggle: same = clear)
+  [ / ]             Cycle brush
+  R                 Toggle row fill/clear
+  X                 Clear row
+  F                 Fill row with brush
+
+  -- Playback --
+  P                 Play/pause animation preview
+  + / -             Adjust ms timing (50ms steps)
+
+  -- Clipboard --
+  Y                 Copy current frame
+  V                 Paste into current frame
+
+  -- File --
+  S                 Save
+  Q / ESC           Quit
 """
 
 import copy
+import fcntl
 import json
 import os
 import sys
 import termios
+import time
 import tty
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
 from claude_cat.__main__ import render_hex_line
-from claude_cat.sprites import load, BLOCKS, REQUIRED_MOODS, _convert_legacy
+from claude_cat.sprites import BLOCKS
 
-MOODS = REQUIRED_MOODS
 CSI = "\033["
 RST = "\033[0m"
-
-# 17 brush options: 0-F + I
+BOLD = "\033[1m"
+DIM = "\033[2m"
 BRUSHES = "0123456789ABCDEFI"
 
-MAX_W = 18  # max char width
-MAX_H = 12  # max char height
+MAX_W = 18
+MAX_H = 12
 
 
 def read_key(fd):
@@ -49,26 +63,31 @@ def read_key(fd):
             ch3 = os.read(fd, 1).decode("utf-8", errors="ignore")
             return {"A": "UP", "B": "DOWN", "C": "RIGHT", "D": "LEFT", "Z": "SHIFT_TAB"}.get(ch3, "ESC")
         return "ESC"
+    if ch in ("\r", "\n"):
+        return "ENTER"
+    if ch == "\x7f":
+        return "BACKSPACE"
     return ch
 
 
-def pad_grid(rows, target_w, target_h):
+def pad_frame(rows, w, h):
+    """Center a frame in a w x h grid."""
     cur_h = len(rows)
     cur_w = len(rows[0]) if rows else 0
-    pad_l = (target_w - cur_w) // 2
-    pad_r = target_w - cur_w - pad_l
-    padded = [list("0" * pad_l + r + "0" * pad_r) for r in rows]
-    pad_t = (target_h - cur_h) // 2
-    pad_b = target_h - cur_h - pad_t
-    empty = ["0"] * target_w
-    return [list(empty) for _ in range(pad_t)] + padded + [list(empty) for _ in range(pad_b)]
+    pl = (w - cur_w) // 2
+    pr = w - cur_w - pl
+    padded = [list("0" * pl + r + "0" * pr) for r in rows]
+    pt = (h - cur_h) // 2
+    pb = h - cur_h - pt
+    empty = ["0"] * w
+    return [list(empty) for _ in range(pt)] + padded + [list(empty) for _ in range(pb)]
 
 
-def trim_grid(rows):
+def trim_frame(rows):
+    """Remove empty border from a frame."""
     if not rows:
-        return rows
-    h = len(rows)
-    w = len(rows[0])
+        return ["00"]
+    h, w = len(rows), len(rows[0])
     top, bot, left, right = h, -1, w, -1
     for y in range(h):
         for x in range(w):
@@ -78,239 +97,403 @@ def trim_grid(rows):
                 left = min(left, x)
                 right = max(right, x)
     if bot < 0:
-        return [["0", "0"]]
-    return [row[left:right + 1] for row in rows[top:bot + 1]]
+        return ["00"]
+    return ["".join(row[left:right + 1]) for row in rows[top:bot + 1]]
 
 
-def brush_display(ch):
+def brush_char(ch):
     ch = ch.upper()
     if ch == "0":
-        return CSI + "2m\u00b7" + RST
+        return DIM + "\u00b7" + RST
     elif ch == "I":
         return CSI + "7m " + RST
     elif ch == "F":
-        return CSI + "1m\u2588" + RST
+        return BOLD + "\u2588" + RST
     else:
-        idx = int(ch, 16)
-        return CSI + "1m" + BLOCKS[idx] + RST
+        return BOLD + BLOCKS[int(ch, 16)] + RST
 
 
-def render(grid, mood_idx, cx, cy, char_w, char_h, brush_idx, saved=False, clipboard=False):
-    mood = MOODS[mood_idx]
-    rows = grid[mood]
-    preview_rows = ["".join(r) for r in rows]
+class Editor:
+    def __init__(self, path):
+        self.path = path
+        with open(path) as f:
+            self.data = json.load(f)
 
-    out = CSI + "H"
+        # Build item list: states first, then reactions
+        self.items = []  # (name, kind) tuples
+        for name in self.data.get("states", {}):
+            self.items.append((name, "state"))
+        for name in self.data.get("reactions", {}):
+            self.items.append((name, "reaction"))
 
-    # Mood tabs
-    for i, m in enumerate(MOODS):
-        if i == mood_idx:
-            out += CSI + "7m " + m + " " + RST + " "
-        else:
-            out += CSI + "2m " + m + " " + RST + " "
-    out += CSI + "K\n\n"
-
-    # Grid + preview side by side
-    for y in range(char_h):
-        for x in range(char_w):
-            ch = rows[y][x].upper()
-            at_cursor = x == cx and y == cy
-
-            if at_cursor:
-                if ch == "0":
-                    out += CSI + "48;5;23m " + RST
-                elif ch == "I":
-                    out += CSI + "48;5;37m " + RST
-                elif ch == "F":
-                    out += CSI + "48;5;37m" + CSI + "30m\u2588" + RST
-                else:
-                    idx = int(ch, 16)
-                    out += CSI + "48;5;37m" + CSI + "30m" + BLOCKS[idx] + RST
+        # Pad all frames to MAX grid
+        self.grids = {}  # (name, kind, frame_idx) -> 2D list
+        for name, kind in self.items:
+            if kind == "state":
+                cfg = self.data["states"][name]
+                for i, frame in enumerate(cfg.get("frames", [])):
+                    self.grids[(name, "frame", i)] = pad_frame(frame, MAX_W, MAX_H)
+                if "blink" in cfg:
+                    self.grids[(name, "blink", 0)] = pad_frame(cfg["blink"], MAX_W, MAX_H)
             else:
-                if ch == "I":
-                    out += CSI + "7m " + RST
-                elif ch == "0":
-                    cell_shade = (x + y) % 2
-                    out += (CSI + "90m\u00b7" + RST) if cell_shade else " "
-                elif ch == "F":
-                    out += CSI + "1m\u2588" + RST
-                else:
-                    idx = int(ch, 16)
-                    out += CSI + "1m" + BLOCKS[idx] + RST
+                cfg = self.data["reactions"][name]
+                self.grids[(name, "reaction", 0)] = pad_frame(cfg.get("frame", []), MAX_W, MAX_H)
 
-        # Preview
-        if y < len(preview_rows):
-            out += "    " + render_hex_line(preview_rows[y])
+        self.item_idx = 0
+        self.frame_idx = 0
+        self.cx = 0
+        self.cy = 0
+        self.brush_idx = len(BRUSHES) - 1  # default: I
+        self.clipboard = None
+        self.playing = False
+        self.play_frame = 0
+        self.play_time = 0.0
+        self.saved = False
 
+    def _current_name(self):
+        return self.items[self.item_idx][0]
+
+    def _current_kind(self):
+        return self.items[self.item_idx][1]
+
+    def _frame_count(self):
+        name = self._current_name()
+        kind = self._current_kind()
+        if kind == "reaction":
+            return 1
+        cfg = self.data["states"][name]
+        n = len(cfg.get("frames", []))
+        if "blink" in cfg:
+            n += 1  # blink is the last "frame"
+        return n
+
+    def _frame_label(self, idx):
+        name = self._current_name()
+        kind = self._current_kind()
+        if kind == "reaction":
+            return "hold"
+        cfg = self.data["states"][name]
+        n_frames = len(cfg.get("frames", []))
+        if idx < n_frames:
+            return str(idx)
+        if idx == n_frames and "blink" in cfg:
+            return "blink"
+        return str(idx)
+
+    def _grid_key(self):
+        name = self._current_name()
+        kind = self._current_kind()
+        if kind == "reaction":
+            return (name, "reaction", 0)
+        cfg = self.data["states"][name]
+        n_frames = len(cfg.get("frames", []))
+        if self.frame_idx < n_frames:
+            return (name, "frame", self.frame_idx)
+        return (name, "blink", 0)
+
+    def _current_grid(self):
+        return self.grids.get(self._grid_key())
+
+    def _ms(self):
+        name = self._current_name()
+        kind = self._current_kind()
+        if kind == "reaction":
+            return int(self.data["reactions"][name].get("hold", 4.0) * 1000)
+        return self.data["states"][name].get("ms", 1000)
+
+    def _set_ms(self, ms):
+        name = self._current_name()
+        kind = self._current_kind()
+        if kind == "reaction":
+            self.data["reactions"][name]["hold"] = max(0.5, ms / 1000.0)
+        else:
+            self.data["states"][name]["ms"] = max(50, ms)
+
+    def render(self):
+        grid = self._current_grid()
+        if not grid:
+            return
+        name = self._current_name()
+        kind = self._current_kind()
+        n_frames = self._frame_count()
+        ms = self._ms()
+
+        # For playback, show the play frame
+        if self.playing and kind == "state":
+            cfg = self.data["states"][name]
+            all_frames = list(cfg.get("frames", []))
+            if all_frames:
+                pf = self.play_frame % len(all_frames)
+                play_key = (name, "frame", pf)
+                play_grid = self.grids.get(play_key, grid)
+            else:
+                play_grid = grid
+        else:
+            play_grid = grid
+
+        out = CSI + "H" + CSI + "?25l"
+
+        # Item tabs
+        for i, (n, k) in enumerate(self.items):
+            tag = n if k == "state" else "!" + n
+            if i == self.item_idx:
+                out += CSI + "7m " + tag + " " + RST + " "
+            else:
+                out += DIM + " " + tag + " " + RST + " "
         out += CSI + "K\n"
 
-    # Brush palette
-    out += CSI + "K\n"
-    out += "brush: "
-    for i, b in enumerate(BRUSHES):
-        if i == brush_idx:
-            out += CSI + "43m"
-        out += brush_display(b)
-        if i == brush_idx:
-            out += RST
-        out += " "
-    out += CSI + "K\n"
+        # Frame pips
+        out += "  "
+        show_idx = self.play_frame % max(1, len(self.data["states"].get(name, {}).get("frames", []))) if self.playing else self.frame_idx
+        for i in range(n_frames):
+            label = self._frame_label(i)
+            if (self.playing and kind == "state" and i == show_idx) or (not self.playing and i == self.frame_idx):
+                out += CSI + "33m\u25cf" + RST + " "
+            else:
+                out += DIM + "\u25cb" + RST + " "
+        if kind == "state":
+            mode = self.data["states"][name].get("mode", "?")
+            out += "  " + DIM + "%s %dms" % (mode, ms) + RST
+        else:
+            out += "  " + DIM + "hold %.1fs" % (ms / 1000.0) + RST
+        out += CSI + "K\n\n"
 
-    # Status
-    out += CSI + "2m"
-    out += "wasd:move  space:paint  []:brush  R:row  X:clear  F:fill  tab:mood  Y/P:copy  S:save  Q:quit"
-    out += RST + CSI + "K\n"
-    out += "char (%d, %d)  brush: %s" % (cx, cy, BRUSHES[brush_idx])
-    if clipboard:
-        out += "  " + CSI + "33m[clipboard]" + RST
-    if saved:
-        out += "  " + CSI + "32m[saved]" + RST
-    out += CSI + "K\n" + CSI + "J"
+        # Grid + preview
+        display = play_grid if self.playing else grid
+        preview_rows = ["".join(r) for r in display]
+        for y in range(MAX_H):
+            for x in range(MAX_W):
+                ch = display[y][x].upper()
+                at_cursor = x == self.cx and y == self.cy and not self.playing
 
-    sys.stdout.write(out)
-    sys.stdout.flush()
-
-
-def save(grid, path):
-    trimmed = {}
-    for mood in MOODS:
-        trimmed[mood] = ["".join(row) for row in trim_grid(grid[mood])]
-
-    max_w = max(len(trimmed[m][0]) for m in MOODS)
-    max_h = max(len(trimmed[m]) for m in MOODS)
-
-    moods = {}
-    for mood in MOODS:
-        rows = list(trimmed[mood])
-        padded = pad_grid(rows, max_w, max_h)
-        moods[mood] = ["".join(row) for row in padded]
-
-    data = {
-        "name": os.path.splitext(os.path.basename(path))[0],
-        "author": "",
-        "description": "",
-        "format": "hex",
-        "width": max_w,
-        "height": max_h,
-        "moods": moods,
-    }
-
-    if os.path.exists(path):
-        try:
-            with open(path) as f:
-                existing = json.load(f)
-            for key in ("name", "author", "description", "eyes"):
-                if key in existing:
-                    data[key] = existing[key]
-        except Exception:
-            pass
-
-    with open(path, "w") as f:
-        json.dump(data, f, indent=2)
-        f.write("\n")
-
-
-def main():
-    path = sys.argv[1] if len(sys.argv) > 1 else "src/claude_cat/sprites/default.json"
-
-    if os.path.exists(path):
-        with open(path) as f:
-            data = json.load(f)
-        raw_moods = data.get("moods", data)
-
-        # Auto-detect legacy format
-        if data.get("format") != "hex":
-            sample = list(raw_moods.values())[0][0]
-            if set(sample) <= {"#", "."}:
-                converted = {}
-                for mood, rows in raw_moods.items():
-                    converted[mood] = _convert_legacy(rows)
-                raw_moods = converted
-    else:
-        raw_moods = {m: ["0" * 14] * 7 for m in MOODS}
-
-    # Pad all moods to max grid size
-    grid = {}
-    for mood in MOODS:
-        grid[mood] = pad_grid(raw_moods[mood], MAX_W, MAX_H)
-
-    char_h = MAX_H
-    char_w = MAX_W
-
-    mood_idx = 0
-    cx, cy = 0, 0
-    brush_idx = len(BRUSHES) - 1  # default: I (inverse video)
-    clipboard = None
-    just_saved = False
-
-    fd = sys.stdin.fileno()
-    old = termios.tcgetattr(fd)
-
-    try:
-        tty.setcbreak(fd)
-        sys.stdout.write(CSI + "2J" + CSI + "?25l")
-
-        while True:
-            render(grid, mood_idx, cx, cy, char_w, char_h, brush_idx,
-                   saved=just_saved, clipboard=clipboard is not None)
-            just_saved = False
-
-            key = read_key(fd)
-
-            if key in ("q", "Q", "ESC"):
-                break
-            elif key in ("w", "UP"):
-                cy = max(0, cy - 1)
-            elif key in ("s", "DOWN"):
-                cy = min(char_h - 1, cy + 1)
-            elif key in ("a", "A", "LEFT"):
-                cx = max(0, cx - 1)
-            elif key in ("d", "D", "RIGHT"):
-                cx = min(char_w - 1, cx + 1)
-            elif key == " ":
-                mood = MOODS[mood_idx]
-                current = grid[mood][cy][cx].upper()
-                brush = BRUSHES[brush_idx]
-                if current == brush:
-                    grid[mood][cy][cx] = "0"  # toggle off
+                if at_cursor:
+                    if ch == "0":
+                        out += CSI + "48;5;23m " + RST
+                    elif ch == "I":
+                        out += CSI + "48;5;37m " + RST
+                    else:
+                        out += CSI + "48;5;37m" + CSI + "30m" + (BLOCKS[int(ch, 16)] if ch != "F" else "\u2588") + RST
                 else:
-                    grid[mood][cy][cx] = brush
-            elif key == "[":
-                brush_idx = (brush_idx - 1) % len(BRUSHES)
-            elif key == "]":
-                brush_idx = (brush_idx + 1) % len(BRUSHES)
-            elif key == "\t":
-                mood_idx = (mood_idx + 1) % len(MOODS)
-            elif key == "SHIFT_TAB":
-                mood_idx = (mood_idx - 1) % len(MOODS)
-            elif key in "1234567":
-                mood_idx = int(key) - 1
-            elif key in ("r", "R"):
-                mood = MOODS[mood_idx]
-                row = grid[mood][cy]
-                filled = sum(1 for c in row if c != "0")
-                fill = "0" if filled > len(row) // 2 else BRUSHES[brush_idx]
-                grid[mood][cy] = [fill] * char_w
-            elif key in ("x",):
-                grid[MOODS[mood_idx]][cy] = ["0"] * char_w
-            elif key == "f":
-                grid[MOODS[mood_idx]][cy] = [BRUSHES[brush_idx]] * char_w
-            elif key in ("Y", "y"):
-                clipboard = copy.deepcopy(grid[MOODS[mood_idx]])
-            elif key in ("P", "p"):
-                if clipboard:
-                    grid[MOODS[mood_idx]] = copy.deepcopy(clipboard)
-            elif key == "S":
-                save(grid, path)
-                just_saved = True
-            elif key == "\x13":
-                save(grid, path)
-                just_saved = True
-    finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, old)
-        sys.stdout.write(CSI + "?25h\n")
+                    if ch == "I":
+                        out += CSI + "7m " + RST
+                    elif ch == "0":
+                        out += (DIM + "\u00b7" + RST) if (x + y) % 2 else " "
+                    elif ch == "F":
+                        out += BOLD + "\u2588" + RST
+                    else:
+                        out += BOLD + BLOCKS[int(ch, 16)] + RST
+
+            # Preview
+            if y < len(preview_rows):
+                out += "    " + render_hex_line(preview_rows[y])
+            out += CSI + "K\n"
+
+        # Brush palette
+        out += CSI + "K\n" + "  brush: "
+        for i, b in enumerate(BRUSHES):
+            if i == self.brush_idx:
+                out += CSI + "43m"
+            out += brush_char(b)
+            if i == self.brush_idx:
+                out += RST
+            out += " "
+        out += CSI + "K\n"
+
+        # Status
+        out += DIM
+        if self.playing:
+            out += "  PLAYING  "
+        out += "wasd:move space:paint []:brush </>:frame enter:add bksp:del +/-:ms P:play Y/V:copy S:save"
+        out += RST
+        if self.saved:
+            out += "  " + CSI + "32m[saved]" + RST
+        out += CSI + "K\n"
+        out += "  char(%d,%d) frame:%s" % (self.cx, self.cy, self._frame_label(self.frame_idx))
+        out += CSI + "K\n" + CSI + "J"
+
+        sys.stdout.write(out)
         sys.stdout.flush()
+
+    def save(self):
+        # Trim and write back
+        for name, kind in self.items:
+            if kind == "state":
+                cfg = self.data["states"][name]
+                new_frames = []
+                for i in range(len(cfg.get("frames", []))):
+                    key = (name, "frame", i)
+                    if key in self.grids:
+                        new_frames.append(trim_frame(self.grids[key]))
+                cfg["frames"] = new_frames
+                blink_key = (name, "blink", 0)
+                if blink_key in self.grids:
+                    cfg["blink"] = trim_frame(self.grids[blink_key])
+            else:
+                key = (name, "reaction", 0)
+                if key in self.grids:
+                    self.data["reactions"][name]["frame"] = trim_frame(self.grids[key])
+
+        with open(self.path, "w") as f:
+            json.dump(self.data, f, indent=2)
+            f.write("\n")
+        self.saved = True
+
+    def add_frame(self):
+        if self._current_kind() != "state":
+            return
+        name = self._current_name()
+        cfg = self.data["states"][name]
+        frames = cfg.get("frames", [])
+        n = len(frames)
+        if self.frame_idx >= n:
+            return  # can't add after blink
+        # Duplicate current frame
+        src_key = (name, "frame", self.frame_idx)
+        new_grid = copy.deepcopy(self.grids[src_key])
+        # Shift all frame keys after insertion point
+        for i in range(n - 1, self.frame_idx, -1):
+            self.grids[(name, "frame", i + 1)] = self.grids.pop((name, "frame", i))
+        self.frame_idx += 1
+        self.grids[(name, "frame", self.frame_idx)] = new_grid
+        frames.insert(self.frame_idx, ["0"] * 7)  # placeholder, will be overwritten on save
+
+    def del_frame(self):
+        if self._current_kind() != "state":
+            return
+        name = self._current_name()
+        cfg = self.data["states"][name]
+        frames = cfg.get("frames", [])
+        n = len(frames)
+        if n <= 1:
+            return  # keep at least one
+        if self.frame_idx >= n:
+            return  # can't delete blink
+        del self.grids[(name, "frame", self.frame_idx)]
+        # Shift keys down
+        for i in range(self.frame_idx + 1, n):
+            if (name, "frame", i) in self.grids:
+                self.grids[(name, "frame", i - 1)] = self.grids.pop((name, "frame", i))
+        frames.pop(self.frame_idx)
+        if self.frame_idx >= len(frames):
+            self.frame_idx = len(frames) - 1
+
+    def run(self):
+        fd = sys.stdin.fileno()
+        old = termios.tcgetattr(fd)
+        orig_fl = fcntl.fcntl(fd, fcntl.F_GETFL)
+
+        try:
+            tty.setcbreak(fd)
+            sys.stdout.write(CSI + "2J")
+
+            while True:
+                self.render()
+                self.saved = False
+
+                # Animate in play mode
+                if self.playing:
+                    fcntl.fcntl(fd, fcntl.F_SETFL, orig_fl | os.O_NONBLOCK)
+                    try:
+                        key = read_key(fd)
+                    except (BlockingIOError, OSError):
+                        key = None
+                    fcntl.fcntl(fd, fcntl.F_SETFL, orig_fl)
+
+                    now = time.time()
+                    ms = self._ms()
+                    if now - self.play_time >= ms / 1000.0:
+                        name = self._current_name()
+                        n = len(self.data["states"].get(name, {}).get("frames", []))
+                        if n > 0:
+                            self.play_frame = (self.play_frame + 1) % n
+                        self.play_time = now
+
+                    if key is None:
+                        time.sleep(0.03)
+                        continue
+                else:
+                    key = read_key(fd)
+
+                if key in ("q", "Q", "ESC"):
+                    break
+                elif key in ("p", "P"):
+                    self.playing = not self.playing
+                    self.play_frame = 0
+                    self.play_time = time.time()
+                elif key in ("w", "UP"):
+                    self.cy = max(0, self.cy - 1)
+                elif key in ("s", "DOWN"):
+                    self.cy = min(MAX_H - 1, self.cy + 1)
+                elif key in ("a", "A", "LEFT"):
+                    self.cx = max(0, self.cx - 1)
+                elif key in ("d", "D", "RIGHT"):
+                    self.cx = min(MAX_W - 1, self.cx + 1)
+                elif key == " ":
+                    grid = self._current_grid()
+                    if grid:
+                        current = grid[self.cy][self.cx].upper()
+                        brush = BRUSHES[self.brush_idx]
+                        grid[self.cy][self.cx] = "0" if current == brush else brush
+                elif key == "]":
+                    self.brush_idx = (self.brush_idx + 1) % len(BRUSHES)
+                elif key == "[":
+                    self.brush_idx = (self.brush_idx - 1) % len(BRUSHES)
+                elif key in ("<", ","):
+                    n = self._frame_count()
+                    if n > 0:
+                        self.frame_idx = (self.frame_idx - 1) % n
+                elif key in (">", "."):
+                    n = self._frame_count()
+                    if n > 0:
+                        self.frame_idx = (self.frame_idx + 1) % n
+                elif key == "ENTER":
+                    self.add_frame()
+                elif key == "BACKSPACE":
+                    self.del_frame()
+                elif key == "+":
+                    self._set_ms(self._ms() + 50)
+                elif key == "-":
+                    self._set_ms(self._ms() - 50)
+                elif key == "\t":
+                    self.item_idx = (self.item_idx + 1) % len(self.items)
+                    self.frame_idx = 0
+                    self.playing = False
+                elif key == "SHIFT_TAB":
+                    self.item_idx = (self.item_idx - 1) % len(self.items)
+                    self.frame_idx = 0
+                    self.playing = False
+                elif key in ("r", "R"):
+                    grid = self._current_grid()
+                    if grid:
+                        row = grid[self.cy]
+                        filled = sum(1 for c in row if c != "0")
+                        fill = "0" if filled > len(row) // 2 else BRUSHES[self.brush_idx]
+                        grid[self.cy][:] = [fill] * MAX_W
+                elif key in ("x",):
+                    grid = self._current_grid()
+                    if grid:
+                        grid[self.cy][:] = ["0"] * MAX_W
+                elif key == "f":
+                    grid = self._current_grid()
+                    if grid:
+                        grid[self.cy][:] = [BRUSHES[self.brush_idx]] * MAX_W
+                elif key in ("y", "Y"):
+                    grid = self._current_grid()
+                    if grid:
+                        self.clipboard = copy.deepcopy(grid)
+                elif key in ("v", "V"):
+                    if self.clipboard:
+                        key = self._grid_key()
+                        self.grids[key] = copy.deepcopy(self.clipboard)
+                elif key == "S":
+                    self.save()
+        finally:
+            fcntl.fcntl(fd, fcntl.F_SETFL, orig_fl)
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+            sys.stdout.write(CSI + "?25h\n")
+            sys.stdout.flush()
 
 
 if __name__ == "__main__":
-    main()
+    path = sys.argv[1] if len(sys.argv) > 1 else "src/claude_cat/sprites/default.json"
+    Editor(path).run()
