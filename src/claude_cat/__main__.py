@@ -351,39 +351,38 @@ class Cat:
             self.blinking = False
             dirty = True
 
-        # Active state quiet for 15s -> drop to thinking (still processing)
-        if self.state in ("reading", "cooking", "browsing") and not self.reaction and now - self.last_event > 15:
+        # ── Timeouts (state machine) ──
+        quiet = now - self.last_event
+        is_active = self.state not in ("idle", "waiting", "sleeping")
+
+        # Active (reading/cooking/browsing) + 15s quiet -> thinking
+        if self.state in ("reading", "cooking", "browsing") and not self.reaction and quiet > 15:
             self.state = "thinking"
             self.frame_idx = 0
             dirty = True
 
-        # Refresh transcript: 2s while active, 5s while waiting/cooking
-        refresh_interval = 5.0 if self.state in ("waiting", "cooking") else 2.0
-        if (
-            self.transcript_path
-            and self.state not in ("idle", "sleeping")
-            and now - self.last_transcript_read > refresh_interval
-        ):
-            self._read_last_message(self.transcript_path)
-            self.last_transcript_read = now
+        # Thinking + 2min quiet -> interrupted -> idle
+        if self.state == "thinking" and not self.reaction and quiet > 120:
+            self.reaction = "interrupted"
+            self.reaction_end = now + self.reactions.get("interrupted", {}).get("hold", 10.0)
+            self.reaction_msg = "interrupted"
+            self.state = "idle"
             dirty = True
 
-        # Idle for 2 min -> sleeping (waiting NEVER sleeps — it needs you)
-        if self.state == "idle" and not self.reaction and now - self.last_event > 120:
+        # Idle + 2min -> sleeping
+        if self.state == "idle" and not self.reaction and quiet > 120:
             self.state = "sleeping"
             self.frame_idx = 0
             self.overlay = "plug"
             self.overlay_end = now + OVERLAYS["plug"]["duration"]
             dirty = True
 
-        # Was working, went quiet for 2 min -> interrupted then idle
-        if self.state not in ("idle", "waiting", "sleeping") and not self.reaction and now - self.last_event > 120:
-            self.reaction = "interrupted"
-            self.reaction_end = now + self.reactions.get("interrupted", {}).get("hold", 10.0)
-            self.reaction_msg = "interrupted"
-            self.state = "idle"
-            self.overlay = "plug"
-            self.overlay_end = now + OVERLAYS["plug"]["duration"]
+        # Waiting NEVER decays — only a new event changes it
+
+        # ── Transcript refresh (active only, every 2s) ──
+        if self.transcript_path and is_active and now - self.last_transcript_read > 2.0:
+            self._read_last_message(self.transcript_path)
+            self.last_transcript_read = now
             dirty = True
 
         # Expire overlay
@@ -466,10 +465,19 @@ class Litter:
                     cat.cwd = data.get("cwd", "")
                     cat.last_mtime = os.path.getmtime(path)
                     cat.last_raw = json.dumps(data)
-                    # Restore waiting state if last event was Stop
+                    # Restore state from last event
                     ev = data.get("event", "")
+                    tool = data.get("tool", "")
+                    age = time.time() - os.path.getmtime(path)
                     if ev == "Stop":
                         cat.state = "waiting"
+                    elif ev in ("PostToolUse", "PreToolUse") and age < 30:
+                        cat.state = TOOL_STATES.get(tool, "cooking")
+                    elif ev == "UserPromptSubmit" and age < 30:
+                        cat.state = "thinking"
+                    elif age > 120:
+                        cat.state = "sleeping"
+                    # else: stays idle
                     # Read transcript for last message + user prompt
                     tp = data.get("transcript_path", "")
                     if tp:
