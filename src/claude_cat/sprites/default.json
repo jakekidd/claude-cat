@@ -2,6 +2,7 @@
   "name": "default",
   "author": "claude-cat",
   "description": "The default cat. Placeholder art -- PRs welcome.",
+  "format": "hex",
   "width": 14,
   "height": 7,
   "moods": {
@@ -9,65 +10,64 @@
       "00030000003000",
       "006CB00006CB00",
       "00IIIIIIIIII00",
-      "37I08IIII08IB3",
+      "37I12IIII12IB3",
       "37IIII96IIIIB3",
-      "0CIIIIIIIIIIC0",
-      "000B70000B7000"
+      "0CIIIIFFIIIIC0",
+      "000B7A005B7000"
     ],
     "blink": [
-      "00120000001200",
-      "01I7333333I720",
-      "0IIIIIIIIIIII0",
-      "0IIIIIEDIIIII0",
-      "0IIIIIIIIIIII0",
-      "0CCEDCCCCEDCC0",
-      "000CC0000CC000"
+      "00030000003000",
+      "006CB00006CB00",
+      "00IIIIIIIIII00",
+      "37IIIIIIIIIIB3",
+      "37IIII96IIIIB3",
+      "0CIIIIFFIIIIC0",
+      "000B7A005B7000"
     ],
     "working": [
-      "00120000001200",
-      "01I7333333I720",
-      "0IECCIIIICCDI0",
-      "0IB33IEDI337I0",
-      "0IIIIIIIIIIII0",
-      "0CCEDCCCCEDCC0",
-      "000CC0000CC000"
+      "00030000003000",
+      "006CB00006CB00",
+      "00IIIIIIIIII00",
+      "37I00IIII00IB3",
+      "37IIII96IIIIB3",
+      "0CIIIIFFIIIIC0",
+      "000B7A005B7000"
     ],
     "happy": [
-      "00120000001200",
-      "01I7333333I720",
-      "0IIIIIIIIIIII0",
-      "0II33IEDI33II0",
-      "0IIIICCCCIIII0",
-      "0CCEDC00CEDCC0",
-      "000CC0000CC000"
+      "00030000003000",
+      "006CB00006CB00",
+      "00IIIIIIIIII00",
+      "37ICCIIIICCIB3",
+      "37IIII96IIIIB3",
+      "0CIIIIFFIIIIC0",
+      "000B7A005B7000"
     ],
     "error": [
-      "00120000001200",
-      "01I7333333I720",
-      "0IIEDIIIIEDII0",
-      "0II7BIEDI7BII0",
-      "0IIIIIEDIIIII0",
-      "0CCED8004EDCC0",
-      "000CC0000CC000"
+      "00030000003000",
+      "006CB00006CB00",
+      "00IIIIIIIIII00",
+      "37I69IIII69IB3",
+      "37IIII96IIIIB3",
+      "0CIIIIFFIIIIC0",
+      "000B7A005B7000"
     ],
     "sleeping": [
-      "00120000001200",
-      "01I7333333I720",
-      "0IIIIIIIIIIII0",
-      "0II33IEDI33II0",
-      "0IIIIIIIIIIII0",
-      "0CCEDCCCCEDCC0",
-      "000CC0000CC000"
+      "00030000003000",
+      "006CB00006CB00",
+      "00IIIIIIIIII00",
+      "37I33IIII33IB3",
+      "37IIII96IIIIB3",
+      "0CIIIIFFIIIIC0",
+      "000B7A005B7000"
     ],
     "surprised": [
-      "00120000001200",
-      "01I7333333I720",
-      "0IA005IIA005I0",
-      "0IB337EDB337I0",
-      "0IIIICCCCIIII0",
-      "0CCED0000EDCC0",
-      "000CC0000CC000"
+      "00030000003000",
+      "006CB00006CB00",
+      "00I00IIII00I00",
+      "37I00IIII00IB3",
+      "37IIII96IIIIB3",
+      "0CIIIIFFIIIIC0",
+      "000B7A005B7000"
     ]
-  },
-  "format": "hex"
+  }
 }
