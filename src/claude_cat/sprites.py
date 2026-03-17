@@ -1,31 +1,27 @@
 """Sprite loading for claude-cat.
 
-Sprites are pixel bitmaps: '#' = filled, '.' = empty.
-Row count and width must be even.
+Sprites use an extended hex format: one character per terminal cell.
+Not true hexadecimal -- 17 symbols (base-17, "heptadecimal" if you
+want to be fancy). 0-F map to the 16 quadrant block characters,
+plus I for inverse video fill.
 
-Each 2x2 pixel block maps to one quadrant block character,
-giving 2x resolution in both axes.
-
-Sprites can be loaded from:
-  1. A JSON file (--sprite path/to/file.json)
-  2. A named sprite in the sprites/ directory (--sprite name)
-  3. The built-in default (no flag)
+  0 = empty       8 = ▘
+  1 = ▗           9 = ▚
+  2 = ▖           A = ▌
+  3 = ▄           B = ▙
+  4 = ▝           C = ▀
+  5 = ▐           D = ▜
+  6 = ▞           E = ▛
+  7 = ▟           F = █ (foreground block)
+  I = inverse video (gap-free fill)
 
 JSON format:
 {
   "name": "my-cat",
-  "author": "your-name",
-  "description": "A cool cat",
-  "width": 24,
-  "height": 16,
+  "format": "hex",
   "moods": {
-    "idle": ["..##..", ...],
-    "blink": [...],
-    "working": [...],
-    "happy": [...],
-    "error": [...],
-    "sleeping": [...],
-    "surprised": [...]
+    "idle": ["00III00", ...],
+    ...
   }
 }
 """
@@ -36,168 +32,53 @@ from pathlib import Path
 
 REQUIRED_MOODS = ["idle", "blink", "working", "happy", "error", "sleeping", "surprised"]
 
-# Built-in fallback (same as sprites/default.json)
-BUILTIN = {
-    "idle": [
-        ".....##..........##.....",
-        "....####........####....",
-        "...######......######...",
-        "..####################..",
-        "..####################..",
-        "..####....####....####..",
-        "..####....####....####..",
-        "..####################..",
-        "..#########..#########..",
-        "..####################..",
-        "..########....########..",
-        "..####################..",
-        "..####################..",
-        "..####################..",
-        "...##################...",
-        ".....##############.....",
-    ],
-    "blink": [
-        ".....##..........##.....",
-        "....####........####....",
-        "...######......######...",
-        "..####################..",
-        "..####################..",
-        "..####################..",
-        "..####################..",
-        "..####################..",
-        "..#########..#########..",
-        "..####################..",
-        "..########....########..",
-        "..####################..",
-        "..####################..",
-        "..####################..",
-        "...##################...",
-        ".....##############.....",
-    ],
-    "working": [
-        ".....##..........##.....",
-        "....####........####....",
-        "...######......######...",
-        "..####################..",
-        "..####################..",
-        "..###.....####.....###..",
-        "..###.....####.....###..",
-        "..####################..",
-        "..#########..#########..",
-        "..####################..",
-        "..#######......#######..",
-        "..####################..",
-        "..####################..",
-        "..####################..",
-        "...##################...",
-        ".....##############.....",
-    ],
-    "happy": [
-        ".....##..........##.....",
-        "....####........####....",
-        "...######......######...",
-        "..####################..",
-        "..####################..",
-        "..####################..",
-        "..####....####....####..",
-        "..####################..",
-        "..#########..#########..",
-        "..####################..",
-        "..#####..........#####..",
-        "..########....########..",
-        "..####################..",
-        "..####################..",
-        "...##################...",
-        ".....##############.....",
-    ],
-    "error": [
-        ".....##..........##.....",
-        "....####........####....",
-        "...######......######...",
-        "..####################..",
-        "..####################..",
-        "..#####..######..#####..",
-        "..####.##.####.##.####..",
-        "..####################..",
-        "..#########..#########..",
-        "..####################..",
-        "..#########..#########..",
-        "..#######......#######..",
-        "..####################..",
-        "..####################..",
-        "...##################...",
-        ".....##############.....",
-    ],
-    "sleeping": [
-        ".....##..........##.....",
-        "....####........####....",
-        "...######......######...",
-        "..####################..",
-        "..####################..",
-        "..####################..",
-        "..####....####....####..",
-        "..####################..",
-        "..#########..#########..",
-        "..####################..",
-        "..####################..",
-        "..####################..",
-        "..####################..",
-        "..####################..",
-        "...##################...",
-        ".....##############.....",
-    ],
-    "surprised": [
-        ".....##..........##.....",
-        "....####........####....",
-        "...######......######...",
-        "..####################..",
-        "..##......####......##..",
-        "..##......####......##..",
-        "..##......####......##..",
-        "..####################..",
-        "..#########..#########..",
-        "..####################..",
-        "..#####..........#####..",
-        "..#####..........#####..",
-        "..####################..",
-        "..####################..",
-        "...##################...",
-        ".....##############.....",
-    ],
-}
+VALID_CHARS = set("0123456789ABCDEFabcdefI")
+
+# Block character lookup: index 0-15 maps to Unicode quadrant block
+BLOCKS = " \u2597\u2596\u2584\u259d\u2590\u259e\u259f\u2598\u259a\u258c\u2599\u2580\u259c\u259b\u2588"
 
 
 def _sprites_dir():
-    """Find the sprites/ directory (inside the package)."""
     return Path(__file__).resolve().parent / "sprites"
 
 
-def load(name=None):
-    """Load sprites by name or path.
+def _convert_legacy(rows):
+    """Convert old subpixel (#/.) format to hex format."""
+    hexchars = "0123456789ABCDEF"
+    out = []
+    for y in range(0, len(rows), 2):
+        top = rows[y]
+        bot = rows[y + 1] if y + 1 < len(rows) else "." * len(top)
+        line = ""
+        for x in range(0, len(top), 2):
+            tl = 1 if top[x] == "#" else 0
+            tr = 1 if x + 1 < len(top) and top[x + 1] == "#" else 0
+            bl = 1 if bot[x] == "#" else 0
+            br = 1 if x + 1 < len(bot) and bot[x + 1] == "#" else 0
+            idx = tl * 8 + tr * 4 + bl * 2 + br
+            line += "I" if idx == 15 else hexchars[idx]
+        out.append(line)
+    return out
 
-    - None -> load default.json from sprites dir, fall back to BUILTIN
-    - "somefile.json" or "/path/to/file.json" -> load that file
-    - "name" -> look for sprites/name.json
-    """
+
+def load(name=None):
+    """Load sprites by name or path."""
     if name is None:
         default_json = _sprites_dir() / "default.json"
         if default_json.exists():
             return _load_file(default_json)
-        return dict(BUILTIN)
+        return {}
 
-    # Direct file path
     path = Path(name)
     if path.suffix == ".json" and path.exists():
         return _load_file(path)
 
-    # Named sprite in sprites/ directory
     sprites_dir = _sprites_dir()
     if sprites_dir:
         candidate = sprites_dir / (name + ".json")
         if candidate.exists():
             return _load_file(candidate)
 
-    # Try as direct path without .json suffix
     if path.with_suffix(".json").exists():
         return _load_file(path.with_suffix(".json"))
 
@@ -208,7 +89,6 @@ def load(name=None):
 
 
 def _load_file(path):
-    """Load and validate a sprite JSON file."""
     with open(path) as f:
         data = json.load(f)
 
@@ -217,16 +97,22 @@ def _load_file(path):
         print("Invalid sprite file: expected 'moods' dict")
         raise SystemExit(1)
 
+    # Auto-detect and convert legacy format
+    is_legacy = data.get("format") != "hex"
+    if is_legacy:
+        sample = list(moods.values())[0][0]
+        if set(sample) <= {"#", "."}:
+            converted = {}
+            for mood, rows in moods.items():
+                converted[mood] = _convert_legacy(rows)
+            moods = converted
+
     missing = [m for m in REQUIRED_MOODS if m not in moods]
     if missing:
         print("Sprite missing moods: %s" % ", ".join(missing))
         raise SystemExit(1)
 
-    # Validate dimensions
     for mood, rows in moods.items():
-        if len(rows) % 2 != 0:
-            print("Sprite '%s' has odd row count (%d), must be even" % (mood, len(rows)))
-            raise SystemExit(1)
         widths = set(len(r) for r in rows)
         if len(widths) > 1:
             print("Sprite '%s' has inconsistent row widths" % mood)
@@ -236,9 +122,8 @@ def _load_file(path):
 
 
 def list_sprites():
-    """List available sprite files."""
     sprites_dir = _sprites_dir()
-    if not sprites_dir:
+    if not sprites_dir or not sprites_dir.exists():
         print("  (no sprites directory found)")
         return
     found = sorted(sprites_dir.glob("*.json"))
@@ -259,7 +144,3 @@ def list_sprites():
             print("  %s  %s" % (label, " -- ".join(meta) if meta else ""))
         except Exception:
             print("  %s" % f.stem)
-
-
-# Default export for backward compat
-SPRITES = BUILTIN

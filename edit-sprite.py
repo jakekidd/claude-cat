@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """Sprite editor for claude-cat.
 
-Cursor moves in character space. Each cell is a 2x2 subpixel block.
-Paint cells with a brush selected from the 16 quadrant block types.
+Cursor moves in character space. Each cell stores one hex char
+from the extended hex palette (0-F + I). Not true hex -- 17
+symbols total.
 
 Controls:
-  WASD / arrows   Move cursor (character space)
-  SPACE            Paint current brush at cursor
+  WASD / arrows   Move cursor
+  SPACE            Paint brush (toggle: same char clears to empty)
   [ / ]            Cycle brush
-  R                Toggle entire row (fill/clear)
+  R                Toggle row (fill/clear)
   X                Clear row
-  F                Fill row
+  F                Fill row with current brush
   1-7 / TAB        Switch mood
   Y                Copy current mood
   P                Paste copied mood into current
@@ -26,35 +27,18 @@ import termios
 import tty
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
-from claude_cat.__main__ import to_blocks
-from claude_cat.sprites import BUILTIN, REQUIRED_MOODS
+from claude_cat.__main__ import render_hex_line
+from claude_cat.sprites import load, BLOCKS, REQUIRED_MOODS, _convert_legacy
 
 MOODS = REQUIRED_MOODS
 CSI = "\033["
 RST = "\033[0m"
 
-# All 16 quadrant patterns: (TL, TR, BL, BR)
-# Index matches BLOCKS lookup: TL*8 + TR*4 + BL*2 + BR
-PATTERNS = [
-    (0, 0, 0, 0),  # 0:  empty
-    (0, 0, 0, 1),  # 1:  ▗
-    (0, 0, 1, 0),  # 2:  ▖
-    (0, 0, 1, 1),  # 3:  ▄
-    (0, 1, 0, 0),  # 4:  ▝
-    (0, 1, 0, 1),  # 5:  ▐
-    (0, 1, 1, 0),  # 6:  ▞
-    (0, 1, 1, 1),  # 7:  ▟
-    (1, 0, 0, 0),  # 8:  ▘
-    (1, 0, 0, 1),  # 9:  ▚
-    (1, 0, 1, 0),  # 10: ▌
-    (1, 0, 1, 1),  # 11: ▙
-    (1, 1, 0, 0),  # 12: ▀
-    (1, 1, 0, 1),  # 13: ▜
-    (1, 1, 1, 0),  # 14: ▛
-    (1, 1, 1, 1),  # 15: █
-]
+# 17 brush options: 0-F + I
+BRUSHES = "0123456789ABCDEFI"
 
-BLOCKS = " \u2597\u2596\u2584\u259d\u2590\u259e\u259f\u2598\u259a\u258c\u2599\u2580\u259c\u259b\u2588"
+MAX_W = 18  # max char width
+MAX_H = 12  # max char height
 
 
 def read_key(fd):
@@ -68,41 +52,53 @@ def read_key(fd):
     return ch
 
 
-def get_cell(grid, mood, cx, cy):
-    """Read the 4 subpixels at char position (cx, cy) and return brush index."""
-    rows = grid[mood]
-    px, py = cx * 2, cy * 2
-    tl = 1 if rows[py][px] == "#" else 0
-    tr = 1 if rows[py][px + 1] == "#" else 0
-    bl = 1 if rows[py + 1][px] == "#" else 0
-    br = 1 if rows[py + 1][px + 1] == "#" else 0
-    return tl * 8 + tr * 4 + bl * 2 + br
+def pad_grid(rows, target_w, target_h):
+    cur_h = len(rows)
+    cur_w = len(rows[0]) if rows else 0
+    pad_l = (target_w - cur_w) // 2
+    pad_r = target_w - cur_w - pad_l
+    padded = [list("0" * pad_l + r + "0" * pad_r) for r in rows]
+    pad_t = (target_h - cur_h) // 2
+    pad_b = target_h - cur_h - pad_t
+    empty = ["0"] * target_w
+    return [list(empty) for _ in range(pad_t)] + padded + [list(empty) for _ in range(pad_b)]
 
 
-def set_cell(grid, mood, cx, cy, brush_idx):
-    """Write a brush pattern to the 4 subpixels at char position (cx, cy)."""
-    rows = grid[mood]
-    px, py = cx * 2, cy * 2
-    tl, tr, bl, br = PATTERNS[brush_idx]
-    rows[py][px] = "#" if tl else "."
-    rows[py][px + 1] = "#" if tr else "."
-    rows[py + 1][px] = "#" if bl else "."
-    rows[py + 1][px + 1] = "#" if br else "."
+def trim_grid(rows):
+    if not rows:
+        return rows
+    h = len(rows)
+    w = len(rows[0])
+    top, bot, left, right = h, -1, w, -1
+    for y in range(h):
+        for x in range(w):
+            if rows[y][x] != "0":
+                top = min(top, y)
+                bot = max(bot, y)
+                left = min(left, x)
+                right = max(right, x)
+    if bot < 0:
+        return [["0", "0"]]
+    return [row[left:right + 1] for row in rows[top:bot + 1]]
 
 
-def render_cat_char(ch):
-    """Render a single cat character with inverse video for full blocks."""
-    if ch == "\u2588":
+def brush_display(ch):
+    ch = ch.upper()
+    if ch == "0":
+        return CSI + "2m\u00b7" + RST
+    elif ch == "I":
         return CSI + "7m " + RST
-    elif ch == " ":
-        return " "
+    elif ch == "F":
+        return CSI + "1m\u2588" + RST
     else:
-        return CSI + "1m" + ch + RST
+        idx = int(ch, 16)
+        return CSI + "1m" + BLOCKS[idx] + RST
 
 
 def render(grid, mood_idx, cx, cy, char_w, char_h, brush_idx, saved=False, clipboard=False):
     mood = MOODS[mood_idx]
-    preview = to_blocks(["".join(r) for r in grid[mood]])
+    rows = grid[mood]
+    preview_rows = ["".join(r) for r in rows]
 
     out = CSI + "H"
 
@@ -114,45 +110,47 @@ def render(grid, mood_idx, cx, cy, char_w, char_h, brush_idx, saved=False, clipb
             out += CSI + "2m " + m + " " + RST + " "
     out += CSI + "K\n\n"
 
-    # Grid (character space) + preview side by side
+    # Grid + preview side by side
     for y in range(char_h):
         for x in range(char_w):
-            cell_idx = get_cell(grid, mood, x, y)
-            ch = BLOCKS[cell_idx]
+            ch = rows[y][x].upper()
             at_cursor = x == cx and y == cy
 
             if at_cursor:
-                # Red background cursor
-                if ch == "\u2588" or ch == " ":
-                    out += CSI + "48;5;196m" + CSI + "7m " + RST
+                if ch == "0":
+                    out += CSI + "48;5;23m " + RST
+                elif ch == "I":
+                    out += CSI + "48;5;37m " + RST
+                elif ch == "F":
+                    out += CSI + "48;5;37m" + CSI + "30m\u2588" + RST
                 else:
-                    out += CSI + "48;5;196m" + CSI + "1;30m" + ch + RST
+                    idx = int(ch, 16)
+                    out += CSI + "48;5;37m" + CSI + "30m" + BLOCKS[idx] + RST
             else:
-                out += render_cat_char(ch)
+                if ch == "I":
+                    out += CSI + "7m " + RST
+                elif ch == "0":
+                    cell_shade = (x + y) % 2
+                    out += (CSI + "90m\u00b7" + RST) if cell_shade else " "
+                elif ch == "F":
+                    out += CSI + "1m\u2588" + RST
+                else:
+                    idx = int(ch, 16)
+                    out += CSI + "1m" + BLOCKS[idx] + RST
 
-        # Preview on right
-        if y < len(preview):
-            out += "    "
-            pline = preview[y]
-            pi = 0
-            while pi < len(pline):
-                out += render_cat_char(pline[pi])
-                pi += 1
+        # Preview
+        if y < len(preview_rows):
+            out += "    " + render_hex_line(preview_rows[y])
 
         out += CSI + "K\n"
 
     # Brush palette
     out += CSI + "K\n"
     out += "brush: "
-    for i in range(16):
+    for i, b in enumerate(BRUSHES):
         if i == brush_idx:
-            out += CSI + "7;33m"
-        if i == 15:
-            out += CSI + "7m " + RST
-        elif i == 0:
-            out += CSI + "2m\u00b7" + RST
-        else:
-            out += BLOCKS[i]
+            out += CSI + "43m"
+        out += brush_display(b)
         if i == brush_idx:
             out += RST
         out += " "
@@ -162,7 +160,7 @@ def render(grid, mood_idx, cx, cy, char_w, char_h, brush_idx, saved=False, clipb
     out += CSI + "2m"
     out += "wasd:move  space:paint  []:brush  R:row  X:clear  F:fill  tab:mood  Y/P:copy  S:save  Q:quit"
     out += RST + CSI + "K\n"
-    out += "char (%d, %d)  brush: %s" % (cx, cy, BLOCKS[brush_idx] if brush_idx > 0 else "empty")
+    out += "char (%d, %d)  brush: %s" % (cx, cy, BRUSHES[brush_idx])
     if clipboard:
         out += "  " + CSI + "33m[clipboard]" + RST
     if saved:
@@ -174,16 +172,26 @@ def render(grid, mood_idx, cx, cy, char_w, char_h, brush_idx, saved=False, clipb
 
 
 def save(grid, path):
+    trimmed = {}
+    for mood in MOODS:
+        trimmed[mood] = ["".join(row) for row in trim_grid(grid[mood])]
+
+    max_w = max(len(trimmed[m][0]) for m in MOODS)
+    max_h = max(len(trimmed[m]) for m in MOODS)
+
     moods = {}
     for mood in MOODS:
-        moods[mood] = ["".join(row) for row in grid[mood]]
+        rows = list(trimmed[mood])
+        padded = pad_grid(rows, max_w, max_h)
+        moods[mood] = ["".join(row) for row in padded]
 
     data = {
         "name": os.path.splitext(os.path.basename(path))[0],
         "author": "",
         "description": "",
-        "width": len(grid[MOODS[0]][0]),
-        "height": len(grid[MOODS[0]]),
+        "format": "hex",
+        "width": max_w,
+        "height": max_h,
         "moods": moods,
     }
 
@@ -208,22 +216,30 @@ def main():
     if os.path.exists(path):
         with open(path) as f:
             data = json.load(f)
-        sprites = data.get("moods", data)
-    else:
-        sprites = copy.deepcopy(BUILTIN)
+        raw_moods = data.get("moods", data)
 
+        # Auto-detect legacy format
+        if data.get("format") != "hex":
+            sample = list(raw_moods.values())[0][0]
+            if set(sample) <= {"#", "."}:
+                converted = {}
+                for mood, rows in raw_moods.items():
+                    converted[mood] = _convert_legacy(rows)
+                raw_moods = converted
+    else:
+        raw_moods = {m: ["0" * 14] * 7 for m in MOODS}
+
+    # Pad all moods to max grid size
     grid = {}
     for mood in MOODS:
-        grid[mood] = [list(row) for row in sprites[mood]]
+        grid[mood] = pad_grid(raw_moods[mood], MAX_W, MAX_H)
 
-    sub_h = len(grid[MOODS[0]])
-    sub_w = len(grid[MOODS[0]][0])
-    char_h = sub_h // 2
-    char_w = sub_w // 2
+    char_h = MAX_H
+    char_w = MAX_W
 
     mood_idx = 0
     cx, cy = 0, 0
-    brush_idx = 15  # default: full block
+    brush_idx = len(BRUSHES) - 1  # default: I (inverse video)
     clipboard = None
     just_saved = False
 
@@ -252,11 +268,17 @@ def main():
             elif key in ("d", "D", "RIGHT"):
                 cx = min(char_w - 1, cx + 1)
             elif key == " ":
-                set_cell(grid, MOODS[mood_idx], cx, cy, brush_idx)
+                mood = MOODS[mood_idx]
+                current = grid[mood][cy][cx].upper()
+                brush = BRUSHES[brush_idx]
+                if current == brush:
+                    grid[mood][cy][cx] = "0"  # toggle off
+                else:
+                    grid[mood][cy][cx] = brush
             elif key == "[":
-                brush_idx = (brush_idx - 1) % 16
+                brush_idx = (brush_idx - 1) % len(BRUSHES)
             elif key == "]":
-                brush_idx = (brush_idx + 1) % 16
+                brush_idx = (brush_idx + 1) % len(BRUSHES)
             elif key == "\t":
                 mood_idx = (mood_idx + 1) % len(MOODS)
             elif key == "SHIFT_TAB":
@@ -265,17 +287,14 @@ def main():
                 mood_idx = int(key) - 1
             elif key in ("r", "R"):
                 mood = MOODS[mood_idx]
-                # Toggle row: if mostly filled, clear it; else fill it
-                row_filled = sum(1 for x in range(char_w) if get_cell(grid, mood, x, cy) == 15)
-                fill = 0 if row_filled > char_w // 2 else 15
-                for x in range(char_w):
-                    set_cell(grid, mood, x, cy, fill)
+                row = grid[mood][cy]
+                filled = sum(1 for c in row if c != "0")
+                fill = "0" if filled > len(row) // 2 else BRUSHES[brush_idx]
+                grid[mood][cy] = [fill] * char_w
             elif key in ("x",):
-                for x in range(char_w):
-                    set_cell(grid, MOODS[mood_idx], x, cy, 0)
-            elif key in ("f",):
-                for x in range(char_w):
-                    set_cell(grid, MOODS[mood_idx], x, cy, 15)
+                grid[MOODS[mood_idx]][cy] = ["0"] * char_w
+            elif key == "f":
+                grid[MOODS[mood_idx]][cy] = [BRUSHES[brush_idx]] * char_w
             elif key in ("Y", "y"):
                 clipboard = copy.deepcopy(grid[MOODS[mood_idx]])
             elif key in ("P", "p"):

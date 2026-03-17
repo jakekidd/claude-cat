@@ -24,7 +24,7 @@ HOOK_EVENTS = [
     "SubagentStop",
 ]
 
-# Quadrant block lookup: index = TL*8 + TR*4 + BL*2 + BR
+# Quadrant block lookup (extended hex: 0-F + I for inverse video)
 BLOCKS = " \u2597\u2596\u2584\u259d\u2590\u259e\u259f\u2598\u259a\u258c\u2599\u2580\u259c\u259b\u2588"
 
 TOOL_LABELS = {
@@ -53,25 +53,31 @@ DIM = CSI + "2m"
 RST = CSI + "0m"
 
 
-def to_blocks(rows):
-    """Convert pixel bitmap to quadrant block characters.
+def render_hex_line(hex_row):
+    """Render a hex-format sprite row to terminal output.
 
-    Each 2x2 pixel group maps to one Unicode quadrant block character,
-    giving 2x horizontal and 2x vertical resolution vs plain characters.
+    0=space, 1-E=quadrant blocks, F=foreground block, I=inverse video.
     """
-    out = []
-    for y in range(0, len(rows), 2):
-        top = rows[y] if y < len(rows) else ""
-        bot = rows[y + 1] if y + 1 < len(rows) else ""
-        w = max(len(top), len(bot))
-        line = ""
-        for x in range(0, w, 2):
-            tl = 1 if x < len(top) and top[x] == "#" else 0
-            tr = 1 if x + 1 < len(top) and top[x + 1] == "#" else 0
-            bl = 1 if x < len(bot) and bot[x] == "#" else 0
-            br = 1 if x + 1 < len(bot) and bot[x + 1] == "#" else 0
-            line += BLOCKS[tl * 8 + tr * 4 + bl * 2 + br]
-        out.append(line)
+    out = ""
+    i = 0
+    while i < len(hex_row):
+        ch = hex_row[i].upper()
+        if ch == "I":
+            j = i
+            while j < len(hex_row) and hex_row[j].upper() == "I":
+                j += 1
+            out += CSI + "7m" + " " * (j - i) + RST
+            i = j
+        elif ch == "0":
+            out += " "
+            i += 1
+        elif ch == "F":
+            out += BOLD + "\u2588" + RST
+            i += 1
+        else:
+            idx = int(ch, 16)
+            out += BOLD + BLOCKS[idx] + RST
+            i += 1
     return out
 
 
@@ -92,7 +98,7 @@ class Cat:
         mood = self.mood
         if self.blinking and mood not in ("sleeping", "surprised"):
             mood = "blink"
-        cat = to_blocks(self.sprites[mood])
+        cat = self.sprites[mood]
         cat_w = len(cat[0]) if cat else 12
 
         out = HOME + HIDE
@@ -108,22 +114,7 @@ class Cat:
             out += CLRL + "\n" + CLRL + "\n" + CLRL + "\n"
 
         for line in cat:
-            # Use inverse video for full blocks (fills inter-line gap)
-            i = 0
-            while i < len(line):
-                if line[i] == "\u2588":
-                    j = i
-                    while j < len(line) and line[j] == "\u2588":
-                        j += 1
-                    out += CSI + "7m" + " " * (j - i) + RST
-                    i = j
-                elif line[i] == " ":
-                    out += " "
-                    i += 1
-                else:
-                    out += BOLD + line[i] + RST
-                    i += 1
-            out += CLRL + "\n"
+            out += render_hex_line(line) + CLRL + "\n"
 
         out += CLRL + "\n" + DIM + self.mood + RST + CLRL + "\n" + CLRB
         sys.stdout.write(out)
