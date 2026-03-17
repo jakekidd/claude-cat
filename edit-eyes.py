@@ -64,7 +64,7 @@ def char_display(ch):
         return BOLD + BLOCKS[idx] + RST
 
 
-def render(sprite_rows, eyes_cfg, mood_idx, slot_idx, playing, play_frame, ms):
+def render(sprite_rows, eyes_cfg, mood_idx, slot_idx, frame_idx, playing, play_frame, ms):
     mood = MOODS[mood_idx]
     slots = eyes_cfg.get("slots", [])
     frames = eyes_cfg.get("frames", [])
@@ -82,8 +82,8 @@ def render(sprite_rows, eyes_cfg, mood_idx, slot_idx, playing, play_frame, ms):
     # Cat preview (with current eye state applied)
     if playing and frames:
         frame = frames[play_frame % len(frames)]
-    elif frames:
-        frame = frames[-1]  # show last frame when editing
+    elif frames and frame_idx < len(frames):
+        frame = frames[frame_idx]
     else:
         frame = None
 
@@ -113,9 +113,9 @@ def render(sprite_rows, eyes_cfg, mood_idx, slot_idx, playing, play_frame, ms):
         out += CSI + "K\n"
 
         # Current slot char (editable)
-        if frames:
-            current_frame = frames[-1] if not playing else frames[play_frame % len(frames)]
-            out += "  current: "
+        if frames and frame_idx < len(frames):
+            current_frame = frames[frame_idx] if not playing else frames[play_frame % len(frames)]
+            out += "  editing: "
             for i, ch in enumerate(current_frame):
                 if i == slot_idx:
                     out += CSI + "43m"
@@ -130,14 +130,30 @@ def render(sprite_rows, eyes_cfg, mood_idx, slot_idx, playing, play_frame, ms):
 
     out += CSI + "K\n"
 
-    # Frames list
-    out += "  frames (%d):  ms: %d" % (len(frames), ms) + CSI + "K\n"
-    for i, frame in enumerate(frames):
-        marker = CSI + "33m>" + RST if (playing and i == play_frame % len(frames)) else " "
+    # Frame pips
+    out += "  ms: %d   " % ms
+    if frames:
+        for i in range(len(frames)):
+            if playing and i == play_frame % len(frames):
+                out += CSI + "33m\u25cf" + RST + " "
+            elif not playing and i == frame_idx:
+                out += "\u25cf "
+            else:
+                out += DIM + "\u25cb" + RST + " "
+    out += CSI + "K\n"
+
+    # Frames detail
+    for i, fr in enumerate(frames):
+        if not playing and i == frame_idx:
+            marker = CSI + "33m>" + RST
+        elif playing and i == play_frame % len(frames):
+            marker = CSI + "33m>" + RST
+        else:
+            marker = " "
         out += "  %s %2d: " % (marker, i)
-        for ch in frame:
+        for ch in fr:
             out += char_display(ch) + " "
-        out += " [%s]" % frame
+        out += " " + DIM + "[%s]" % fr + RST
         out += CSI + "K\n"
 
     out += CSI + "K\n"
@@ -146,7 +162,7 @@ def render(sprite_rows, eyes_cfg, mood_idx, slot_idx, playing, play_frame, ms):
     out += DIM
     if playing:
         out += "  PLAYING  "
-    out += "arrows:slot  []:char  enter:add frame  bksp:del  +/-:ms  P:play  S:save  Q:quit"
+    out += "L/R:slot  U/D:frame  []:char  enter:add  bksp:del  +/-:ms  P:play  S:save  Q:quit"
     out += RST + CSI + "K\n" + CSI + "J"
 
     sys.stdout.write(out)
@@ -164,6 +180,7 @@ def main():
 
     mood_idx = 0
     slot_idx = 0
+    frame_idx = 0
     playing = False
     play_frame = 0
     last_play_time = 0.0
@@ -193,7 +210,12 @@ def main():
                     play_frame = (play_frame + 1) % len(frames)
                     last_play_time = now
 
-            render(sprite_rows, eyes_cfg, mood_idx, slot_idx, playing, play_frame, ms)
+            if frames:
+                frame_idx = min(frame_idx, len(frames) - 1)
+            else:
+                frame_idx = 0
+
+            render(sprite_rows, eyes_cfg, mood_idx, slot_idx, frame_idx, playing, play_frame, ms)
 
             # Non-blocking read in play mode, blocking otherwise
             if playing:
@@ -222,31 +244,41 @@ def main():
             elif key == "LEFT":
                 if slots:
                     slot_idx = (slot_idx - 1) % len(slots)
+            elif key == "UP":
+                if frames:
+                    frame_idx = (frame_idx - 1) % len(frames)
+            elif key == "DOWN":
+                if frames:
+                    frame_idx = (frame_idx + 1) % len(frames)
             elif key == "]":
-                if frames and slots:
-                    last = list(frames[-1])
-                    if slot_idx < len(last):
-                        ci = CHARS.index(last[slot_idx].upper())
-                        last[slot_idx] = CHARS[(ci + 1) % len(CHARS)]
-                        frames[-1] = "".join(last)
+                if frames and slots and frame_idx < len(frames):
+                    f = list(frames[frame_idx])
+                    if slot_idx < len(f):
+                        ci = CHARS.index(f[slot_idx].upper())
+                        f[slot_idx] = CHARS[(ci + 1) % len(CHARS)]
+                        frames[frame_idx] = "".join(f)
             elif key == "[":
-                if frames and slots:
-                    last = list(frames[-1])
-                    if slot_idx < len(last):
-                        ci = CHARS.index(last[slot_idx].upper())
-                        last[slot_idx] = CHARS[(ci - 1) % len(CHARS)]
-                        frames[-1] = "".join(last)
+                if frames and slots and frame_idx < len(frames):
+                    f = list(frames[frame_idx])
+                    if slot_idx < len(f):
+                        ci = CHARS.index(f[slot_idx].upper())
+                        f[slot_idx] = CHARS[(ci - 1) % len(CHARS)]
+                        frames[frame_idx] = "".join(f)
             elif key == "ENTER":
                 if slots:
                     if frames:
-                        frames.append(frames[-1])  # duplicate last as starting point
+                        frames.insert(frame_idx + 1, frames[frame_idx])
+                        frame_idx += 1
                     else:
-                        frames.append("I" * len(slots))  # default: all inverse
+                        frames.append("I" * len(slots))
+                        frame_idx = 0
                     eyes_cfg["frames"] = frames
                     all_eyes[mood] = eyes_cfg
             elif key in ("BACKSPACE", "DEL", "x", "X"):
                 if frames:
-                    frames.pop()
+                    frames.pop(frame_idx)
+                    if frame_idx >= len(frames) and frames:
+                        frame_idx = len(frames) - 1
                     eyes_cfg["frames"] = frames
             elif key == "+":
                 ms = min(5000, ms + 50)
@@ -259,10 +291,12 @@ def main():
             elif key == "\t":
                 mood_idx = (mood_idx + 1) % len(MOODS)
                 slot_idx = 0
+                frame_idx = 0
                 playing = False
             elif key in "1234567":
                 mood_idx = int(key) - 1
                 slot_idx = 0
+                frame_idx = 0
                 playing = False
             elif key == "S":
                 data["eyes"] = all_eyes
