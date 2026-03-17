@@ -189,6 +189,29 @@ class Cat:
         except Exception:
             pass
 
+    def _check_transcript_turn(self, transcript_path):
+        """Check who spoke last in the transcript. Returns 'assistant' or 'human' or ''."""
+        try:
+            if not os.path.exists(transcript_path):
+                return ""
+            with open(transcript_path, "rb") as f:
+                f.seek(0, 2)
+                size = f.tell()
+                chunk = min(8192, size)
+                f.seek(size - chunk)
+                lines = f.read().decode("utf-8", errors="ignore").strip().split("\n")
+            for line in reversed(lines):
+                try:
+                    entry = json.loads(line)
+                    t = entry.get("type", "")
+                    if t in ("assistant", "human"):
+                        return t
+                except (json.JSONDecodeError, KeyError):
+                    continue
+        except Exception:
+            pass
+        return ""
+
     @staticmethod
     def _extract_text(entry):
         """Extract first line of text from a transcript entry."""
@@ -249,7 +272,10 @@ class Cat:
             self.frame_idx = 0
             self.next_frame = time.time() + 0.5
         elif ev == "Stop":
-            self.state = "idle"
+            # Check transcript: if assistant spoke last, we're waiting for user
+            tp = data.get("transcript_path", self.transcript_path)
+            turn = self._check_transcript_turn(tp) if tp else ""
+            self.state = "waiting" if turn == "assistant" else "idle"
             self.reaction = "happy"
             self.reaction_end = time.time() + self.reactions.get("happy", {}).get("hold", 4.0)
             self.reaction_msg = "done!"
@@ -373,10 +399,18 @@ class Cat:
             self.overlay_end = now + OVERLAYS["plug"]["duration"]
             dirty = True
 
-        # Waiting NEVER decays — only a new event changes it
+        # Waiting: scan transcript every 3s — if user responded, wake up
+        if self.state == "waiting" and self.transcript_path and now - self.last_transcript_read > 3.0:
+            turn = self._check_transcript_turn(self.transcript_path)
+            if turn == "human":
+                self.state = "thinking"
+                self.frame_idx = 0
+            self._read_last_message(self.transcript_path)
+            self.last_transcript_read = now
+            dirty = True
 
-        # ── Transcript refresh (active only, every 2s) ──
-        if self.transcript_path and is_active and now - self.last_transcript_read > 2.0:
+        # Transcript refresh for other active states (every 2s)
+        if self.state not in ("idle", "sleeping", "waiting") and self.transcript_path and now - self.last_transcript_read > 2.0:
             self._read_last_message(self.transcript_path)
             self.last_transcript_read = now
             dirty = True
@@ -461,15 +495,23 @@ class Litter:
                     cat.cwd = data.get("cwd", "")
                     cat.last_mtime = os.path.getmtime(path)
                     cat.last_raw = json.dumps(data)
-                    # Restore state from last event
+                    # Restore state from last event + transcript
                     ev = data.get("event", "")
                     tool = data.get("tool", "")
                     age = time.time() - os.path.getmtime(path)
-                    if ev in ("PostToolUse", "PreToolUse") and age < 30:
+                    tp = data.get("transcript_path", "")
+                    if tp:
+                        cat.transcript_path = tp
+                        turn = cat._check_transcript_turn(tp)
+                        if turn == "assistant":
+                            cat.state = "waiting"
+                        elif ev in ("PostToolUse", "PreToolUse") and age < 30:
+                            cat.state = TOOL_STATES.get(tool, "cooking")
+                        elif ev == "UserPromptSubmit" and age < 30:
+                            cat.state = "thinking"
+                    elif ev in ("PostToolUse", "PreToolUse") and age < 30:
                         cat.state = TOOL_STATES.get(tool, "cooking")
-                    elif ev == "UserPromptSubmit" and age < 30:
-                        cat.state = "thinking"
-                    # else: idle (Stop, stale, unknown → idle)
+                    # else: idle
                     # Read transcript for last message + user prompt
                     tp = data.get("transcript_path", "")
                     if tp:
@@ -551,7 +593,7 @@ class Litter:
                 line1 = fg + cwd_short + RST if cwd_short else ""
                 # Line 2: session ID + last tool
                 id_text = DIM + cat.session_id[:16] + RST
-                if cat.state in ("idle", "sleeping") and cat.last_tool:
+                if cat.state in ("idle", "waiting", "sleeping") and cat.last_tool:
                     id_text += "  " + DIM + "last:" + cat.last_tool + RST
                 # Line 3: last message or user prompt (fit to terminal width)
                 raw_msg = ""
@@ -677,38 +719,37 @@ def litter_mode(sprite_data=None):
     fd = sys.stdin.fileno()
     old_term = termios.tcgetattr(fd)
     orig_fl = fcntl.fcntl(fd, fcntl.F_GETFL)
+    running = True
     def cleanup(*_):
-        fcntl.fcntl(fd, fcntl.F_SETFL, orig_fl)
-        termios.tcsetattr(fd, termios.TCSADRAIN, old_term)
-        sys.stdout.write(SHOW + "\n")
-        sys.stdout.flush()
-        sys.exit(0)
+        nonlocal running
+        running = False
     signal.signal(signal.SIGINT, cleanup)
     signal.signal(signal.SIGTERM, cleanup)
     try:
         tty.setcbreak(fd)
-        while True:
+        fcntl.fcntl(fd, fcntl.F_SETFL, orig_fl | os.O_NONBLOCK)
+        while running:
             litter.scan()
             litter.tick()
             litter.render()
             # Non-blocking key check
-            fcntl.fcntl(fd, fcntl.F_SETFL, orig_fl | os.O_NONBLOCK)
             try:
                 ch = os.read(fd, 1).decode("utf-8", errors="ignore")
                 if ch in ("c", "C"):
-                    # Reroll colors
                     random.shuffle(PALETTE)
                     for i, sid in enumerate(litter.cat_order):
                         if sid in litter.cats:
                             litter.cats[sid].color = PALETTE[i % len(PALETTE)]
-                elif ch in ("q", "Q"):
-                    cleanup()
+                elif ch in ("q", "Q", "\x03"):  # q or ctrl-c
+                    break
             except (BlockingIOError, OSError):
                 pass
-            fcntl.fcntl(fd, fcntl.F_SETFL, orig_fl)
             time.sleep(0.1)
     finally:
-        cleanup()
+        fcntl.fcntl(fd, fcntl.F_SETFL, orig_fl)
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_term)
+        sys.stdout.write(SHOW + "\n")
+        sys.stdout.flush()
 
 
 def target_mode(session_id, sprite_data=None):
