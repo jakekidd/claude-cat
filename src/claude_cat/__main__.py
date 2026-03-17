@@ -603,73 +603,102 @@ class Litter:
                 dirty = True
         return dirty
 
+    def _format_ago(self, elapsed):
+        if elapsed < 60:
+            return "%ds ago" % int(elapsed)
+        elif elapsed < 3600:
+            return "%dm ago" % int(elapsed / 60)
+        return "%dh ago" % int(elapsed / 3600)
+
+    def _render_cat(self, cat, now, show_dir=True):
+        """Render one cat. Returns string. show_dir=False when grouped."""
+        sprite = cat._get_sprite()
+        fg = CSI + "38;5;%dm" % cat.color if cat.color else ""
+        cwd_short = os.path.basename(cat.cwd.rstrip("/")) if cat.cwd else ""
+        ago = self._format_ago(now - cat.last_event)
+
+        state_text = fg + BOLD + cat.state + RST + "  " + DIM + ago + RST
+        if cat.reaction_msg:
+            state_text += "  " + CSI + "33m" + cat.reaction_msg + RST
+
+        id_text = DIM + cat.session_id[:16] + RST
+        if cat.state == "idle" and cat.last_tool:
+            id_text += "  " + DIM + "last:" + cat.last_tool + RST
+
+        raw_msg = cat.last_message or ""
+        msg = ""
+        if raw_msg:
+            try:
+                term_w = os.get_terminal_size().columns
+            except OSError:
+                term_w = 80
+            sprite_w = len(sprite[0]) if sprite else 14
+            max_msg = max(5, term_w - sprite_w - 4)
+            if len(raw_msg) > max_msg:
+                msg = raw_msg[:max(2, max_msg - 3)] + "..."
+            else:
+                msg = raw_msg
+
+        labels = [state_text]
+        if show_dir:
+            labels.append(fg + cwd_short + RST if cwd_short else "")
+        labels.append(id_text)
+        if msg:
+            labels.append(DIM + msg + RST)
+
+        out = ""
+        for i, line in enumerate(sprite):
+            out += render_hex_line(line, color=cat.color)
+            if i < len(labels) and labels[i]:
+                out += "  " + labels[i]
+            out += CLRL + "\n"
+        return out
+
     def render(self, now=None):
         if now is None:
             now = time.time()
         out = HOME + HIDE
-        if not self.cats:
+
+        # Filter valid cats
+        valid = [(sid, self.cats[sid]) for sid in self.cat_order
+                 if sid in self.cats and self.cats[sid].cwd]
+
+        if not valid:
             out += CLRL + "\n"
             out += DIM + "  no active sessions" + RST + CLRL + "\n"
             out += DIM + "  start claude code to wake a cat" + RST + CLRL + "\n"
         else:
-            for sid in self.cat_order:
-                if sid not in self.cats:
-                    continue
-                cat = self.cats[sid]
-                # Skip cats with no metadata (stale/empty session files)
-                if not cat.cwd:
-                    continue
-                sprite = cat._get_sprite()
-                fg = CSI + "38;5;%dm" % cat.color if cat.color else ""
-                cwd_short = os.path.basename(cat.cwd.rstrip("/")) if cat.cwd else ""
-                # Time since last activity
-                elapsed = now - cat.last_event
-                if elapsed < 60:
-                    ago = "%ds ago" % int(elapsed)
-                elif elapsed < 3600:
-                    ago = "%dm ago" % int(elapsed / 60)
-                else:
-                    ago = "%dh ago" % int(elapsed / 3600)
-                display_state = cat.state
-                # Line 0: state + time ago + optional reaction message
-                state_text = fg + BOLD + display_state + RST + "  " + DIM + ago + RST
-                if cat.reaction_msg:
-                    state_text += "  " + CSI + "33m" + cat.reaction_msg + RST
-                # Line 1: project dir
-                line1 = fg + cwd_short + RST if cwd_short else ""
-                # Line 2: session ID + last tool
-                id_text = DIM + cat.session_id[:16] + RST
-                if cat.state in ("idle", "waiting", "sleeping") and cat.last_tool:
-                    id_text += "  " + DIM + "last:" + cat.last_tool + RST
-                # Line 3: last message or user prompt (fit to terminal width)
-                raw_msg = ""
-                if cat.last_message:
-                    raw_msg = cat.last_message
-                msg = ""
-                if raw_msg:
+            # Group by directory
+            from collections import OrderedDict
+            groups = OrderedDict()
+            for sid, cat in valid:
+                d = cat.cwd or "unknown"
+                groups.setdefault(d, []).append((sid, cat))
+
+            for cwd, members in groups.items():
+                cwd_short = os.path.basename(cwd.rstrip("/"))
+                if len(members) > 1:
+                    # Group header
+                    base_color = members[0][1].color or 208
+                    fg = CSI + "38;5;%dm" % base_color
                     try:
                         term_w = os.get_terminal_size().columns
                     except OSError:
                         term_w = 80
-                    sprite_w = len(sprite[0]) if sprite else 14
-                    # sprite + 2 gap + message + 1 safety margin
-                    max_msg = max(5, term_w - sprite_w - 4)
-                    if len(raw_msg) > max_msg:
-                        msg = raw_msg[:max(2, max_msg - 3)] + "..."
-                    else:
-                        msg = raw_msg
-                labels = [
-                    state_text,
-                    line1,
-                    id_text,
-                    DIM + msg + RST if msg else "",
-                ]
-                for i, line in enumerate(sprite):
-                    out += render_hex_line(line, color=cat.color)
-                    if i < len(labels) and labels[i]:
-                        out += "  " + labels[i]
+                    header = " " + cwd_short + " "
+                    pad = max(0, term_w - len(header) - 2)
+                    out += fg + DIM + "\u2500\u2500" + RST + fg + BOLD + header + RST + fg + DIM + "\u2500" * pad + RST + CLRL + "\n"
+                    # Assign gradient colors within group
+                    for i, (sid, cat) in enumerate(members):
+                        cat.color = base_color + i  # slight shift for gradient
+                        out += self._render_cat(cat, now, show_dir=False)
+                        out += CLRL + "\n"
+                else:
+                    # Solo cat — show dir on the cat itself
+                    sid, cat = members[0]
+                    out += self._render_cat(cat, now, show_dir=True)
                     out += CLRL + "\n"
-                out += CLRL + "\n"
+
         out += CLRB
         sys.stdout.write(out)
         sys.stdout.flush()
