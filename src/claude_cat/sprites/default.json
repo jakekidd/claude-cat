@@ -80,7 +80,7 @@
       "slots": [[3,3], [3,4], [3,9], [3,10]],
       "_comment": "slow scan right-to-left (cat reads L-to-R). TODO: random-walk wave function for organic movement",
       "frames": ["0505", "0A0A", "5050", "A0A0"],
-      "ms": 600
+      "ms": 200
     }
   }
 }
