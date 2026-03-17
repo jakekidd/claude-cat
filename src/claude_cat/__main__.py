@@ -112,6 +112,38 @@ def render_hex_line(hex_row, color=None):
     return out
 
 
+# ── State machine ────────────────────────────────────────────────────
+#
+# Three meta-states: idle, active, waiting.
+# "active" has substates: thinking, reading, cooking, browsing, compacting.
+# Sleeping is visual-only (label still says "idle").
+#
+#   EVENTS:
+#     UserPromptSubmit => active/thinking
+#     PostToolUse      => active/reading|cooking|browsing (by tool)
+#     SubagentStart    => active/thinking
+#     PreCompact       => active/compacting
+#     PostCompact      => active/thinking
+#     Stop             => waiting (if transcript says assistant spoke last)
+#                      => idle    (otherwise)
+#     PostToolUseFailure => reaction:error (state unchanged)
+#
+#   TIMEOUTS (in tick):
+#     active/reading|cooking|browsing + 15s quiet => active/thinking
+#     active/thinking + 2min quiet => idle + reaction:interrupted
+#     idle + 2min => idle (but cat sleeps visually)
+#     waiting => NEVER times out
+#
+#   BOOT:
+#     transcript last = assistant => waiting
+#     state file < 30s + tool event => that active substate
+#     else => idle
+#
+#   REACTIONS (overlay on any state, don't change state):
+#     happy, error, surprised, interrupted
+#
+
+
 class Cat:
     def __init__(self, sprite_data=None, session_id=None, color=None):
         if sprite_data and isinstance(sprite_data, dict) and "states" in sprite_data:
@@ -124,12 +156,13 @@ class Cat:
         self.color = color
         self.cwd = ""
         self.state_file = state_file_for(session_id) if session_id else STATE_FILE
-        # State = what Claude is doing (persists, animated)
+        # State: idle | waiting | thinking | reading | cooking | browsing | compacting
         self.state = "idle"
+        self.sleeping = False  # visual only, label still says "idle"
         # Reaction = brief face override from events (expires)
         self.reaction = None
         self.reaction_end = 0.0
-        self.reaction_msg = ""  # expressive message shown separately from state
+        self.reaction_msg = ""
         # Animation
         self.frame_idx = 0
         self.next_frame = time.time() + random.uniform(0.5, 2.0)
@@ -232,9 +265,10 @@ class Cat:
         if self.reaction and self.reaction in self.reactions:
             return self.reactions[self.reaction]["frame"]
 
-        state_cfg = self.states.get(self.state)
+        # sleeping is visual-only (state is still "idle")
+        visual_state = "sleeping" if self.state == "idle" and self.sleeping else self.state
+        state_cfg = self.states.get(visual_state)
         if not state_cfg:
-            # waiting uses idle animation, unknown states fall back to idle
             state_cfg = self.states.get("idle", {})
         if not state_cfg:
             return []
@@ -260,12 +294,15 @@ class Cat:
         """
         ev = data.get("event", "")
         tool = data.get("tool", "")
-        was_sleeping = self.state == "sleeping"
 
         # Wake from sleep on any event
-        if was_sleeping:
+        if self.sleeping:
+            self.sleeping = False
             self.reaction = "surprised"
             self.reaction_end = time.time() + 0.5
+
+        # Any active event clears sleeping
+        self.sleeping = False
 
         if ev == "UserPromptSubmit":
             self.state = "thinking"
@@ -320,10 +357,10 @@ class Cat:
 
     def handle_event(self, data):
         """Process event with wake-up animation (for target mode)."""
-        if self.state == "sleeping":
+        if self.sleeping:
+            self.sleeping = False
             self.reaction = "surprised"
             self.reaction_end = time.time() + 0.5
-            self.state = "idle"
             self.render()
             time.sleep(0.4)
         self._process_event(data)
@@ -373,33 +410,35 @@ class Cat:
             self.blinking = False
             dirty = True
 
-        # ── Timeouts (state machine) ──
+        # ── Timeouts ──
         quiet = now - self.last_event
-        is_active = self.state not in ("idle", "sleeping")
+        active = self.state not in ("idle", "waiting")
 
-        # Active (reading/cooking/browsing) + 15s quiet -> thinking
+        # active/reading|cooking|browsing + 15s quiet => active/thinking
         if self.state in ("reading", "cooking", "browsing") and not self.reaction and quiet > 15:
             self.state = "thinking"
             self.frame_idx = 0
             dirty = True
 
-        # Thinking + 2min quiet -> interrupted -> idle
+        # active/thinking + 2min quiet => idle + interrupted reaction
         if self.state == "thinking" and not self.reaction and quiet > 120:
             self.reaction = "interrupted"
             self.reaction_end = now + self.reactions.get("interrupted", {}).get("hold", 10.0)
             self.reaction_msg = "interrupted"
             self.state = "idle"
+            self.sleeping = False
             dirty = True
 
-        # Idle + 2min -> sleeping
-        if self.state == "idle" and not self.reaction and quiet > 120:
-            self.state = "sleeping"
+        # idle + 2min => sleeping (visual only, label stays "idle")
+        if self.state == "idle" and not self.sleeping and quiet > 120:
+            self.sleeping = True
             self.frame_idx = 0
-            self.overlay = "plug"
-            self.overlay_end = now + OVERLAYS["plug"]["duration"]
             dirty = True
 
-        # Waiting: scan transcript every 3s — if user responded, wake up
+        # waiting => NEVER times out
+
+        # ── Transcript refresh ──
+        # waiting: scan every 3s to detect user responding
         if self.state == "waiting" and self.transcript_path and now - self.last_transcript_read > 3.0:
             turn = self._check_transcript_turn(self.transcript_path)
             if turn == "human":
@@ -409,8 +448,8 @@ class Cat:
             self.last_transcript_read = now
             dirty = True
 
-        # Transcript refresh for other active states (every 2s)
-        if self.state not in ("idle", "sleeping", "waiting") and self.transcript_path and now - self.last_transcript_read > 2.0:
+        # active: refresh every 2s for last message display
+        if active and self.transcript_path and now - self.last_transcript_read > 2.0:
             self._read_last_message(self.transcript_path)
             self.last_transcript_read = now
             dirty = True
@@ -503,16 +542,21 @@ class Litter:
                     tp = data.get("transcript_path", "")
                     if tp:
                         cat.transcript_path = tp
-                        turn = cat._check_transcript_turn(tp)
-                        if turn == "assistant":
-                            cat.state = "waiting"
-                        elif ev in ("PostToolUse", "PreToolUse") and age < 30:
-                            cat.state = TOOL_STATES.get(tool, "cooking")
-                        elif ev == "UserPromptSubmit" and age < 30:
-                            cat.state = "thinking"
-                    elif ev in ("PostToolUse", "PreToolUse") and age < 30:
+                        cat._read_last_message(tp)
+                    # Determine state
+                    if ev in ("PostToolUse", "PreToolUse") and age < 30:
                         cat.state = TOOL_STATES.get(tool, "cooking")
-                    # else: idle
+                    elif ev == "UserPromptSubmit" and age < 30:
+                        cat.state = "thinking"
+                    elif ev == "Stop" and tp:
+                        # Check transcript: if assistant spoke last => waiting
+                        turn = cat._check_transcript_turn(tp) if tp else ""
+                        cat.state = "waiting" if turn == "assistant" else "idle"
+                    else:
+                        cat.state = "idle"
+                    # Visual sleep if idle and stale
+                    if cat.state == "idle" and age > 120:
+                        cat.sleeping = True
                     # Read transcript for last message + user prompt
                     tp = data.get("transcript_path", "")
                     if tp:
@@ -584,8 +628,7 @@ class Litter:
                     ago = "%dm ago" % int(elapsed / 60)
                 else:
                     ago = "%dh ago" % int(elapsed / 3600)
-                # Display label: sleeping shows as "idle" (sleeping is just visual)
-                display_state = "idle" if cat.state == "sleeping" else cat.state
+                display_state = cat.state
                 # Line 0: state + time ago + optional reaction message
                 state_text = fg + BOLD + display_state + RST + "  " + DIM + ago + RST
                 if cat.reaction_msg:
