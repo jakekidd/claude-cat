@@ -6,3 +6,4 @@ build/
 .eggs/
 node_modules/
 TODO.md
+claude-cat-debug.log
