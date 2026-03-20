@@ -1684,15 +1684,17 @@ class Litter:
         if self.prompt_queue:
             out += self._render_prompt_widget(now)
 
-        # Graveyard
-        if self.graveyard:
+        # Graveyard — hide cats that are currently alive
+        alive_names = {cat.name for cat in self.cats.values() if not cat.dead}
+        visible_graves = [t for t in self.graveyard if t.get("name") not in alive_names]
+        if visible_graves:
             try:
                 term_w = os.get_terminal_size().columns
             except OSError:
                 term_w = 80
             pad = max(0, term_w - 8)
             out += DIM + "\u2500\u2500 rip " + "\u2500" * pad + RST + CLRL + "\n"
-            for tomb in self.graveyard:
+            for tomb in visible_graves:
                 fg = CSI + "38;5;%dm" % tomb["color"] if tomb["color"] else ""
                 dur = self._format_duration(tomb["duration"]) if tomb["duration"] else ""
                 tok = tomb["tokens"]
