@@ -1530,12 +1530,24 @@ class Litter:
         cwd_short = os.path.basename(cat.cwd.rstrip("/")) if cat.cwd else ""
         ago = self._format_ago(now - cat.last_event)
 
-        # State label
+        # State label with colored dot
         if cat.dead:
             remaining = max(0, 30 - int(now - cat.dead_since))
-            state_text = CSI + "31m" + BOLD + "session ended" + RST + "  " + DIM + "%ds" % remaining + RST
+            dot = CSI + "31m" + "\u25cf " + RST  # red
+            state_text = dot + CSI + "31m" + BOLD + "session ended" + RST + "  " + DIM + "%ds" % remaining + RST
         else:
-            dot = CSI + "33m" + "\u25cf " + RST if cat.permission_pending else ""
+            if cat.permission_pending:
+                dot = CSI + "33m" + "\u25cf " + RST  # yellow/orange
+            elif cat.state == "compacting":
+                dot = CSI + "38;5;117m" + "\u25cf " + RST  # light blue
+            elif cat.state in ("cooking", "reading", "browsing"):
+                dot = CSI + "32m" + "\u25cf " + RST  # green
+            elif cat.state == "thinking":
+                dot = CSI + "33m" + "\u25cf " + RST  # yellow
+            elif cat.sleeping:
+                dot = CSI + "38;5;240m" + "\u25cf " + RST  # dark gray
+            else:
+                dot = CSI + "38;5;245m" + "\u25cf " + RST  # gray (idle)
             state_text = dot + fg + BOLD + cat.state + RST + "  " + DIM + ago + RST
             if cat.reaction_msg:
                 msg_color = CSI + "31m" if cat.reaction == "error" else CSI + "33m"
