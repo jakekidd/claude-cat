@@ -247,6 +247,14 @@ def registry_set_color(session_id, color):
         _registry_dirty = True
 
 
+def registry_set_name(session_id, name):
+    """Override the display name for a session (from --name flag)."""
+    global _registry_dirty
+    if session_id in _registry:
+        _registry[session_id]["name"] = name
+        _registry_dirty = True
+
+
 def registry_touch(session_id):
     """Bump last_seen for a session."""
     global _registry_dirty
@@ -1530,25 +1538,27 @@ class Litter:
         cwd_short = os.path.basename(cat.cwd.rstrip("/")) if cat.cwd else ""
         ago = self._format_ago(now - cat.last_event)
 
-        # State label with colored dot
+        # State indicator: at-a-glance triage
+        #   green dot    = working (leave alone)
+        #   light blue   = compacting (maintenance, leave alone)
+        #   orange square = needs help (permission pending)
+        #   red square   = idle/sleeping/dead (not productive)
+        DOT = "\u25cf "   # circle
+        SQR = "\u25a0 "   # square (stop symbol)
         if cat.dead:
             remaining = max(0, 30 - int(now - cat.dead_since))
-            dot = CSI + "31m" + "\u25cf " + RST  # red
-            state_text = dot + CSI + "31m" + BOLD + "session ended" + RST + "  " + DIM + "%ds" % remaining + RST
+            indicator = CSI + "31m" + SQR + RST
+            state_text = indicator + CSI + "31m" + BOLD + "session ended" + RST + "  " + DIM + "%ds" % remaining + RST
         else:
             if cat.permission_pending:
-                dot = CSI + "33m" + "\u25cf " + RST  # yellow/orange
+                indicator = CSI + "38;5;208m" + SQR + RST  # orange square: needs help
             elif cat.state == "compacting":
-                dot = CSI + "38;5;117m" + "\u25cf " + RST  # light blue
-            elif cat.state in ("cooking", "reading", "browsing"):
-                dot = CSI + "32m" + "\u25cf " + RST  # green
-            elif cat.state == "thinking":
-                dot = CSI + "33m" + "\u25cf " + RST  # yellow
-            elif cat.sleeping:
-                dot = CSI + "38;5;240m" + "\u25cf " + RST  # dark gray
+                indicator = CSI + "38;5;117m" + DOT + RST  # light blue: maintenance
+            elif cat.state in ("thinking", "cooking", "reading", "browsing"):
+                indicator = CSI + "32m" + DOT + RST  # green: working
             else:
-                dot = CSI + "38;5;245m" + "\u25cf " + RST  # gray (idle)
-            state_text = dot + fg + BOLD + cat.state + RST + "  " + DIM + ago + RST
+                indicator = CSI + "31m" + SQR + RST  # red square: idle/sleeping
+            state_text = indicator + fg + BOLD + cat.state + RST + "  " + DIM + ago + RST
             if cat.reaction_msg:
                 msg_color = CSI + "31m" if cat.reaction == "error" else CSI + "33m"
                 state_text += "  " + msg_color + BOLD + cat.reaction_msg + RST
@@ -1890,9 +1900,7 @@ def wrap_mode(child_args):
     import tty
 
     if not child_args:
-        print("Usage: clat wrap -- <command>")
-        print("  e.g.: clat wrap -- claude")
-        sys.exit(1)
+        child_args = ["claude"]
 
     # Save original terminal state
     stdin_fd = sys.stdin.fileno()
@@ -1933,14 +1941,22 @@ def wrap_mode(child_args):
             pass
     signal.signal(signal.SIGWINCH, handle_winch)
 
-    # Detect session_id from --resume arg or by watching state files
+    # Detect session_id and session name from args
     wrap_session_id = None
+    wrap_session_name = None
     for i, arg in enumerate(child_args):
         if arg == "--resume" and i + 1 < len(child_args):
             wrap_session_id = child_args[i + 1]
-            break
+        elif arg in ("--name", "-n") and i + 1 < len(child_args):
+            wrap_session_name = child_args[i + 1]
     # Track existing state files to detect new sessions
     existing_files = set(find_session_files()) if not wrap_session_id else set()
+
+    # Save session name override to registry if resuming with --name
+    if wrap_session_name and wrap_session_id:
+        registry_lookup(wrap_session_id)  # ensure entry exists
+        registry_set_name(wrap_session_id, wrap_session_name)
+        registry_flush_force()
 
     # Set our terminal to raw mode
     tty.setraw(stdin_fd)
@@ -1981,6 +1997,11 @@ def wrap_mode(child_args):
                     newest = max(new_files, key=lambda f: os.path.getmtime(f))
                     bn = os.path.basename(newest)
                     wrap_session_id = bn[len(STATE_PREFIX):-len(".json")]
+                    # Save session name override to registry
+                    if wrap_session_name and wrap_session_id:
+                        registry_lookup(wrap_session_id)  # ensure entry exists
+                        registry_set_name(wrap_session_id, wrap_session_name)
+                        registry_flush_force()
 
             # Check for response files from litter
             if wrap_session_id:
@@ -2194,7 +2215,8 @@ def print_help():
         "  claude-cat --demo                Preview all states + reactions\n"
         "  claude-cat list-sprites          Show available sprites\n"
         "  claude-cat --meow                Identify this session's cat (flash it)\n"
-        "  claude-cat wrap -- <cmd>          PTY wrapper (stdin control)\n"
+        "  claude-cat wrap                   Wrap claude (new session)\n"
+        "  claude-cat wrap --resume <id>     Wrap + resume session\n"
         "  claude-cat --debug               Verbose logging (also prints to stderr)\n"
         "  claude-cat --version             Show version" % VERSION
     )
@@ -2225,11 +2247,14 @@ def main():
     if cmd in ("", "--watch", "watch", "--demo", "demo"):
         sprite_data = sprites_mod.load(sprite_name)
     if cmd in ("wrap", "--wrap"):
-        # Everything after "--" is the child command
+        # Everything after "--" is the child command, OR remaining args passed to claude
         child_args = []
         if "--" in sys.argv:
             dash_idx = sys.argv.index("--")
             child_args = sys.argv[dash_idx + 1:]
+        elif len(filtered) > 1:
+            # clat wrap --resume <id> => claude --resume <id>
+            child_args = ["claude"] + filtered[1:]
         wrap_mode(child_args)
     elif cmd == "--tmux-ccm":
         tmux_ccm_mode()
