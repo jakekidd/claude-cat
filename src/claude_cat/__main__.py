@@ -1890,6 +1890,13 @@ def uninstall_hooks():
     print("Removed %d hook(s) from %s" % (removed, settings_path))
 
 
+def _random_cat_name():
+    """Generate a random hyphenated cat name for session naming."""
+    adj = random.choice(_NAME_ADJ)
+    noun = random.choice(_NAME_NOUN)
+    return adj + "-" + noun
+
+
 def wrap_mode(child_args):
     """PTY wrapper for Claude Code. Transparent passthrough with stdin control."""
     import fcntl
@@ -1905,8 +1912,28 @@ def wrap_mode(child_args):
     # Save original terminal state
     stdin_fd = sys.stdin.fileno()
     if not os.isatty(stdin_fd):
-        print("clatnip requires a terminal (tty)")
+        print("wrap requires a terminal (tty)")
         sys.exit(1)
+
+    # Session naming: prompt if no --name/-n provided and not resuming
+    has_name = any(a in ("--name", "-n") for a in child_args)
+    has_resume = "--resume" in child_args
+    if not has_name and not has_resume:
+        default_name = _random_cat_name()
+        try:
+            user_input = input("session name (\"%s\"): " % default_name).strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            sys.exit(0)
+        name = user_input if user_input else default_name
+        # Sanitize: lowercase, hyphens, strip non-alnum
+        import re
+        name = re.sub(r"[^a-z0-9-]", "-", name.lower())
+        name = re.sub(r"-+", "-", name).strip("-")
+        if not name:
+            name = default_name
+        child_args.extend(["--name", name])
+
     old_term = termios.tcgetattr(stdin_fd)
 
     # Get current terminal size
@@ -2215,8 +2242,9 @@ def print_help():
         "  claude-cat --demo                Preview all states + reactions\n"
         "  claude-cat list-sprites          Show available sprites\n"
         "  claude-cat --meow                Identify this session's cat (flash it)\n"
-        "  claude-cat wrap                   Wrap claude (new session)\n"
+        "  claude-cat wrap                   Wrap claude (prompts for name)\n"
         "  claude-cat wrap --resume <id>     Wrap + resume session\n"
+        "  claude-cat wrap my-feature        Wrap with name (no prompt)\n"
         "  claude-cat --debug               Verbose logging (also prints to stderr)\n"
         "  claude-cat --version             Show version" % VERSION
     )
@@ -2253,8 +2281,15 @@ def main():
             dash_idx = sys.argv.index("--")
             child_args = sys.argv[dash_idx + 1:]
         elif len(filtered) > 1:
-            # clat wrap --resume <id> => claude --resume <id>
-            child_args = ["claude"] + filtered[1:]
+            wrap_args = filtered[1:]
+            # Detect positional name: first arg that doesn't start with -
+            # e.g. "clat wrap my-feature" => --name my-feature
+            if wrap_args and not wrap_args[0].startswith("-"):
+                name = wrap_args[0]
+                rest = wrap_args[1:]
+                child_args = ["claude", "--name", name] + rest
+            else:
+                child_args = ["claude"] + wrap_args
         wrap_mode(child_args)
     elif cmd == "--tmux-ccm":
         tmux_ccm_mode()
