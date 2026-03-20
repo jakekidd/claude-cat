@@ -1230,6 +1230,7 @@ class Litter:
 
     def _update_prompt_queue(self):
         """Sync prompt queue with cat permission states."""
+        now = time.time()
         active_sids = set()
         for cat in self.cats.values():
             if cat.permission_pending and cat.permission_tool:
@@ -1242,10 +1243,13 @@ class Litter:
                         "color": cat.color,
                         "tool": cat.permission_tool,
                         "input": cat.permission_input,
-                        "ts": time.time(),
+                        "ts": now,
                     })
-        # Remove prompts for cats that are no longer pending
-        self.prompt_queue = [p for p in self.prompt_queue if p["session_id"] in active_sids]
+        # Remove stale prompts: cat no longer pending, or prompt older than 2 min
+        self.prompt_queue = [
+            p for p in self.prompt_queue
+            if p["session_id"] in active_sids and now - p["ts"] < 120
+        ]
 
     def _format_ago(self, elapsed):
         if elapsed < 60:
@@ -1503,6 +1507,12 @@ class Litter:
                     f.write(response)
             except OSError:
                 pass
+            # Clear permission state on the cat so it doesn't re-queue
+            cat = self.cats.get(sid)
+            if cat:
+                cat.permission_pending = False
+                cat.permission_tool = ""
+                cat.permission_input = {}
             _log("[prompt] responded %s for %s (%s)", response, prompt["name"], prompt["tool"])
             self.prompt_queue.pop(0)
             return sid
