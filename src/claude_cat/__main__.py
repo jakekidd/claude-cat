@@ -1897,7 +1897,7 @@ def _random_cat_name():
     return adj + "-" + noun
 
 
-def wrap_mode(child_args):
+def code_mode(child_args):
     """PTY wrapper for Claude Code. Transparent passthrough with stdin control."""
     import fcntl
     import pty
@@ -2242,9 +2242,9 @@ def print_help():
         "  claude-cat --demo                Preview all states + reactions\n"
         "  claude-cat list-sprites          Show available sprites\n"
         "  claude-cat --meow                Identify this session's cat (flash it)\n"
-        "  claude-cat wrap                   Wrap claude (prompts for name)\n"
-        "  claude-cat wrap --resume <id>     Wrap + resume session\n"
-        "  claude-cat wrap my-feature        Wrap with name (no prompt)\n"
+        "  claude-cat code                   New session (prompts for name)\n"
+        "  claude-cat code my-feature        Resume 'my-feature' or create new\n"
+        "  claude-cat code --resume <id>     Resume by session id\n"
         "  claude-cat --debug               Verbose logging (also prints to stderr)\n"
         "  claude-cat --version             Show version" % VERSION
     )
@@ -2274,23 +2274,50 @@ def main():
     sprite_data = None
     if cmd in ("", "--watch", "watch", "--demo", "demo"):
         sprite_data = sprites_mod.load(sprite_name)
-    if cmd in ("wrap", "--wrap"):
+    if cmd in ("code", "wrap"):
         # Everything after "--" is the child command, OR remaining args passed to claude
         child_args = []
         if "--" in sys.argv:
             dash_idx = sys.argv.index("--")
             child_args = sys.argv[dash_idx + 1:]
         elif len(filtered) > 1:
-            wrap_args = filtered[1:]
-            # Detect positional name: first arg that doesn't start with -
-            # e.g. "clat wrap my-feature" => --name my-feature
-            if wrap_args and not wrap_args[0].startswith("-"):
-                name = wrap_args[0]
-                rest = wrap_args[1:]
-                child_args = ["claude", "--name", name] + rest
+            code_args = filtered[1:]
+            if code_args and not code_args[0].startswith("-"):
+                # Positional name: clat code my-feature
+                name = code_args[0]
+                rest = code_args[1:]
+                # Look up name in registry — resume if found, new if not
+                reg = _load_registry()
+                found_sid = None
+                for sid, entry in reg.items():
+                    if entry.get("name") == name:
+                        found_sid = sid
+                        break
+                if found_sid:
+                    child_args = ["claude", "--resume", found_sid] + rest
+                else:
+                    child_args = ["claude", "--name", name] + rest
+            elif "--resume" in code_args:
+                # Explicit --resume: check if value exists, suggest close matches
+                idx = code_args.index("--resume")
+                if idx + 1 < len(code_args):
+                    val = code_args[idx + 1]
+                    reg = _load_registry()
+                    if val not in reg:
+                        # Search by name or partial session_id
+                        matches = []
+                        for sid, entry in reg.items():
+                            if val in sid or val in entry.get("name", ""):
+                                matches.append((sid, entry.get("name", "")))
+                        if matches:
+                            print("Session '%s' not found. Did you mean:" % val)
+                            for sid, n in matches[:3]:
+                                print("  %s  (%s)" % (n or sid[:16], sid[:16]))
+                            sys.exit(1)
+                child_args = ["claude"] + code_args
             else:
-                child_args = ["claude"] + wrap_args
-        wrap_mode(child_args)
+                child_args = ["claude"] + code_args
+        code_mode(child_args)
     elif cmd == "--tmux-ccm":
         tmux_ccm_mode()
     elif cmd in ("--hook", "hook"):
