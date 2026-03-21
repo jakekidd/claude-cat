@@ -1254,6 +1254,16 @@ class Litter:
                 pass
             if cat.tick(now):
                 dirty = True
+        # Sync cat names from registry (picks up renames from wrap/--rename)
+        if not hasattr(self, "_last_name_sync") or now - self._last_name_sync > 10:
+            self._last_name_sync = now
+            disk_reg = _load_registry()
+            for cat in self.cats.values():
+                entry = disk_reg.get(cat.session_id, {})
+                disk_name = entry.get("name", "")
+                if disk_name and disk_name != cat.name:
+                    _log("[sync] %s name: %s -> %s", cat.session_id[:8], cat.name, disk_name)
+                    cat.name = disk_name
         # Update prompt queue from cat permission states
         self._update_prompt_queue()
         return dirty
