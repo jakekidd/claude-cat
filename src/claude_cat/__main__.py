@@ -1897,6 +1897,136 @@ def _random_cat_name():
     return adj + "-" + noun
 
 
+def _session_selector(stdin_fd):
+    """Interactive session picker. Returns (action, value) or None on cancel.
+    action: "new" (value=name) or "resume" (value=session_id).
+    """
+    import re
+    import termios
+    import tty
+
+    # Build session list from registry (sorted by last_seen, most recent first)
+    reg = _load_registry()
+    # Detect currently running sessions from state files
+    active_sids = set()
+    for path in find_session_files():
+        try:
+            age = time.time() - os.path.getmtime(path)
+            if age < 3600:
+                bn = os.path.basename(path)
+                sid = bn[len(STATE_PREFIX):-len(".json")]
+                active_sids.add(sid)
+        except OSError:
+            pass
+
+    # Sessions: named, not currently running, sorted by last_seen desc
+    sessions = []
+    for sid, entry in reg.items():
+        if sid in active_sids:
+            continue
+        name = entry.get("name", "")
+        if not name:
+            continue
+        sessions.append({
+            "sid": sid,
+            "name": name,
+            "last_seen": entry.get("last_seen", 0),
+            "tokens": entry.get("tokens", 0),
+            "turns": entry.get("turns", 0),
+        })
+    sessions.sort(key=lambda s: s["last_seen"], reverse=True)
+
+    # Menu: (new) + existing sessions
+    HIGHLIGHT = CSI + "38;5;117m"  # light blue (compacting color)
+    MAX_VISIBLE = 5
+    cursor = 0  # 0 = (new), 1+ = sessions
+    scroll_offset = 0
+    total = 1 + len(sessions)
+
+    old_term = termios.tcgetattr(stdin_fd)
+    try:
+        tty.setcbreak(stdin_fd)
+        while True:
+            # Render
+            out = "\r" + CSI + "J"  # clear from cursor down
+            for i in range(MAX_VISIBLE):
+                idx = scroll_offset + i
+                if idx >= total:
+                    break
+                selected = idx == cursor
+                prefix = HIGHLIGHT + "> " + RST if selected else "  "
+                if idx == 0:
+                    label = "(new)"
+                    detail = ""
+                else:
+                    s = sessions[idx - 1]
+                    label = s["name"]
+                    tok = s["tokens"]
+                    if tok >= 1_000_000:
+                        tok_s = "%.1fM tok" % (tok / 1_000_000)
+                    elif tok >= 1000:
+                        tok_s = "%dk tok" % (tok // 1000)
+                    else:
+                        tok_s = ""
+                    turns_s = "%d turns" % s["turns"] if s["turns"] else ""
+                    parts = [p for p in (turns_s, tok_s) if p]
+                    detail = "  " + DIM + "  ".join(parts) + RST if parts else ""
+
+                if selected:
+                    out += prefix + HIGHLIGHT + BOLD + label + RST + detail + CLRL + "\n"
+                else:
+                    out += prefix + label + detail + CLRL + "\n"
+
+            # Scroll indicator
+            if total > MAX_VISIBLE:
+                pos = "(%d/%d)" % (cursor + 1, total)
+                out += DIM + "  " + pos + RST + CLRL + "\n"
+
+            sys.stdout.write(out)
+            sys.stdout.flush()
+
+            # Read key
+            ch = os.read(stdin_fd, 3).decode("utf-8", errors="ignore")
+            if ch == "\x1b[A":  # up arrow
+                if cursor > 0:
+                    cursor -= 1
+                    if cursor < scroll_offset:
+                        scroll_offset = cursor
+            elif ch == "\x1b[B":  # down arrow
+                if cursor < total - 1:
+                    cursor += 1
+                    if cursor >= scroll_offset + MAX_VISIBLE:
+                        scroll_offset = cursor - MAX_VISIBLE + 1
+            elif ch in ("\r", "\n"):  # enter
+                # Clear the menu
+                sys.stdout.write("\r" + CSI + "J")
+                sys.stdout.flush()
+                if cursor == 0:
+                    # New session: prompt for name
+                    termios.tcsetattr(stdin_fd, termios.TCSADRAIN, old_term)
+                    default_name = _random_cat_name()
+                    try:
+                        user_input = input("session name (\"%s\"): " % default_name).strip()
+                    except (EOFError, KeyboardInterrupt):
+                        print()
+                        return None
+                    name = user_input if user_input else default_name
+                    name = re.sub(r"[^a-z0-9-]", "-", name.lower())
+                    name = re.sub(r"-+", "-", name).strip("-")
+                    if not name:
+                        name = default_name
+                    return ("new", name)
+                else:
+                    s = sessions[cursor - 1]
+                    return ("resume", s["sid"])
+            elif ch in ("\x03", "\x1b", "q"):  # ctrl-c, esc, q
+                sys.stdout.write("\r" + CSI + "J")
+                sys.stdout.flush()
+                return None
+    finally:
+        termios.tcsetattr(stdin_fd, termios.TCSADRAIN, old_term)
+
+
 def code_mode(child_args):
     """PTY wrapper for Claude Code. Transparent passthrough with stdin control."""
     import fcntl
@@ -1915,24 +2045,18 @@ def code_mode(child_args):
         print("wrap requires a terminal (tty)")
         sys.exit(1)
 
-    # Session naming: prompt if no --name/-n provided and not resuming
+    # Session selector: pick existing session or create new
     has_name = any(a in ("--name", "-n") for a in child_args)
-    has_resume = "--resume" in child_args
+    has_resume = "--resume" in child_args or "-c" in child_args or "--continue" in child_args
     if not has_name and not has_resume:
-        default_name = _random_cat_name()
-        try:
-            user_input = input("session name (\"%s\"): " % default_name).strip()
-        except (EOFError, KeyboardInterrupt):
-            print()
+        result = _session_selector(stdin_fd)
+        if result is None:
             sys.exit(0)
-        name = user_input if user_input else default_name
-        # Sanitize: lowercase, hyphens, strip non-alnum
-        import re
-        name = re.sub(r"[^a-z0-9-]", "-", name.lower())
-        name = re.sub(r"-+", "-", name).strip("-")
-        if not name:
-            name = default_name
-        child_args.extend(["--name", name])
+        action, value = result
+        if action == "resume":
+            child_args.extend(["--resume", value])
+        elif action == "new":
+            child_args.extend(["--name", value])
 
     old_term = termios.tcgetattr(stdin_fd)
 
