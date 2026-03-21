@@ -255,6 +255,20 @@ def registry_set_name(session_id, name):
         _registry_dirty = True
 
 
+def registry_set_wrapped(session_id, wrapped=True):
+    """Mark a session as wrapped (launched via clat code)."""
+    global _registry_dirty
+    if session_id in _registry:
+        _registry[session_id]["wrapped"] = wrapped
+        _registry_dirty = True
+
+
+def registry_is_wrapped(session_id):
+    """Check if a session was launched via clat code."""
+    entry = _registry.get(session_id, {})
+    return entry.get("wrapped", False)
+
+
 def registry_touch(session_id):
     """Bump last_seen for a session."""
     global _registry_dirty
@@ -1609,8 +1623,10 @@ class Litter:
             else:
                 msg = raw_msg
 
-        # Name line: bold cat name
-        name_text = fg + BOLD + cat.name + RST if cat.name else ""
+        # Name line: bold cat name, star if wrapped via clat code
+        wrapped = registry_is_wrapped(cat.session_id) if cat.session_id else False
+        star = " *" if wrapped else ""
+        name_text = fg + BOLD + cat.name + RST + DIM + star + RST if cat.name else ""
 
         # Per-cat burn rate for the cwd line
         rate_s = ""
@@ -2107,10 +2123,12 @@ def code_mode(child_args):
     # Track existing state files to detect new sessions
     existing_files = set(find_session_files()) if not wrap_session_id else set()
 
-    # Save session name override to registry if resuming with --name
-    if wrap_session_name and wrap_session_id:
+    # Save session name + wrapped flag to registry
+    if wrap_session_id:
         registry_lookup(wrap_session_id)  # ensure entry exists
-        registry_set_name(wrap_session_id, wrap_session_name)
+        registry_set_wrapped(wrap_session_id)
+        if wrap_session_name:
+            registry_set_name(wrap_session_id, wrap_session_name)
         registry_flush_force()
 
     # Set our terminal to raw mode
@@ -2152,9 +2170,10 @@ def code_mode(child_args):
                     newest = max(new_files, key=lambda f: os.path.getmtime(f))
                     bn = os.path.basename(newest)
                     wrap_session_id = bn[len(STATE_PREFIX):-len(".json")]
-                    # Save session name override to registry
-                    if wrap_session_name and wrap_session_id:
-                        registry_lookup(wrap_session_id)  # ensure entry exists
+                    # Save session name + wrapped flag to registry
+                    registry_lookup(wrap_session_id)  # ensure entry exists
+                    registry_set_wrapped(wrap_session_id)
+                    if wrap_session_name:
                         registry_set_name(wrap_session_id, wrap_session_name)
                         registry_flush_force()
 
@@ -2419,7 +2438,9 @@ def main():
                 if is_uuid:
                     # UUID: resume directly, prompt for name if not in registry
                     reg = _load_registry()
-                    if val not in reg:
+                    entry = reg.get(val, {})
+                    name = entry.get("name", "")
+                    if not name:
                         # Rescue: wrap a native session, ask for a name
                         default_name = _random_cat_name()
                         try:
@@ -2430,11 +2451,11 @@ def main():
                         name = user_input if user_input else default_name
                         name = _re.sub(r"[^a-z0-9-]", "-", name.lower())
                         name = _re.sub(r"-+", "-", name).strip("-") or default_name
-                        # Pre-register in registry with the chosen name
                         registry_lookup(val)
                         registry_set_name(val, name)
                         registry_flush_force()
-                    child_args = ["claude", "--resume", val] + rest
+                    # Pass --name so Claude Code shows it in the UI too
+                    child_args = ["claude", "--resume", val, "--name", name] + rest
                 else:
                     # Name: look up in registry — resume if found, new if not
                     reg = _load_registry()
