@@ -2421,7 +2421,7 @@ def main():
     sprite_data = None
     if cmd in ("", "--watch", "watch", "--demo", "demo"):
         sprite_data = sprites_mod.load(sprite_name)
-    if cmd in ("code", "wrap"):
+    if cmd == "code":
         # Everything after "--" is the child command, OR remaining args passed to claude
         child_args = []
         if "--" in sys.argv:
