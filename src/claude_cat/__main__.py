@@ -1552,13 +1552,17 @@ class Litter:
         else:
             if cat.permission_pending:
                 indicator = CSI + "38;5;208m" + SQR + RST  # orange square: needs help
+                display_state = "waiting..."
             elif cat.state == "compacting":
                 indicator = CSI + "38;5;117m" + DOT + RST  # light blue: maintenance
+                display_state = cat.state
             elif cat.state in ("thinking", "cooking", "reading", "browsing"):
                 indicator = CSI + "32m" + DOT + RST  # green: working
+                display_state = cat.state
             else:
                 indicator = CSI + "31m" + SQR + RST  # red square: idle/sleeping
-            state_text = indicator + fg + BOLD + cat.state + RST + "  " + DIM + ago + RST
+                display_state = cat.state
+            state_text = indicator + fg + BOLD + display_state + RST + "  " + DIM + ago + RST
             if cat.reaction_msg:
                 msg_color = CSI + "31m" if cat.reaction == "error" else CSI + "33m"
                 state_text += "  " + msg_color + BOLD + cat.reaction_msg + RST
