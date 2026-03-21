@@ -552,6 +552,7 @@ class Cat:
         # Lifecycle
         self.dead = False
         self.dead_since = 0.0
+        self.death_reason = ""  # "ended" (SessionEnd) or "killed" (stale/gone)
 
     def _read_last_message(self, transcript_path):
         """Read the last assistant message from transcript JSONL."""
@@ -817,6 +818,7 @@ class Cat:
         elif ev == "SessionEnd":
             self.dead = True
             self.dead_since = time.time()
+            self.death_reason = "ended"
             self.reaction = "error"
             self.reaction_end = time.time() + 3.0
             self.reaction_msg = ""
@@ -1117,6 +1119,7 @@ class Litter:
                     if ev == "SessionEnd":
                         cat.dead = True
                         cat.dead_since = now
+                        cat.death_reason = "ended"
                         _log("[scan] new cat %s: dead (SessionEnd)", sid[:8])
                     elif ev == "PreCompact" and age < 60:
                         cat.state = "compacting"
@@ -1136,11 +1139,13 @@ class Litter:
                     if not cat.dead and age > 3600:
                         cat.dead = True
                         cat.dead_since = now
+                        cat.death_reason = "killed"
                         _log("[scan] %s: dead (stale %.0fh)", sid[:8], age / 3600)
                     # Lifecycle: dead if transcript gone
                     if not cat.dead and tp and not os.path.exists(tp):
                         cat.dead = True
                         cat.dead_since = now
+                        cat.death_reason = "killed"
                         _log("[scan] %s: dead (transcript gone)", sid[:8])
                 except Exception:
                     pass
@@ -1155,18 +1160,21 @@ class Litter:
                         if age > 3600:
                             cat.dead = True
                             cat.dead_since = now
+                            cat.death_reason = "killed"
                             cat.reaction = "error"
                             cat.reaction_end = now + 3.0
                             _log("[lifecycle] %s: dead (stale %.0fh)", sid[:8], age / 3600)
                         elif cat.transcript_path and not os.path.exists(cat.transcript_path):
                             cat.dead = True
                             cat.dead_since = now
+                            cat.death_reason = "killed"
                             cat.reaction = "error"
                             cat.reaction_end = now + 3.0
                             _log("[lifecycle] %s: dead (transcript gone)", sid[:8])
                     except OSError:
                         cat.dead = True
                         cat.dead_since = now
+                        cat.death_reason = "killed"
                         cat.reaction = "error"
                         cat.reaction_end = now + 3.0
                         _log("[lifecycle] %s: dead (state file OSError)", sid[:8])
@@ -1562,7 +1570,8 @@ class Litter:
         if cat.dead:
             remaining = max(0, 30 - int(now - cat.dead_since))
             indicator = CSI + "31m" + SQR + RST
-            state_text = indicator + CSI + "31m" + BOLD + "session ended" + RST + "  " + DIM + "%ds" % remaining + RST
+            death_label = "killed" if cat.death_reason == "killed" else "session ended"
+            state_text = indicator + CSI + "31m" + BOLD + death_label + RST + "  " + DIM + "%ds" % remaining + RST
         else:
             if cat.permission_pending:
                 indicator = CSI + "38;5;208m" + SQR + RST  # orange square: needs help
@@ -1939,14 +1948,14 @@ def _session_selector(stdin_fd):
         except OSError:
             pass
 
-    # Sessions: named, not currently running, sorted by last_seen desc
+    # Sessions: named via clat code, not currently running, sorted by last_seen desc
     sessions = []
     for sid, entry in reg.items():
         if sid in active_sids:
             continue
         name = entry.get("name", "")
-        if not name:
-            continue
+        if not name or not entry.get("wrapped"):
+            continue  # skip auto-generated cat names, only show clat code sessions
         sessions.append({
             "sid": sid,
             "name": name,
@@ -1964,12 +1973,20 @@ def _session_selector(stdin_fd):
     total = 1 + len(sessions)
 
     old_term = termios.tcgetattr(stdin_fd)
+    lines_drawn = 0
     try:
         tty.setcbreak(stdin_fd)
         while True:
-            # Render
-            out = "\r" + CSI + "J"  # clear from cursor down
-            for i in range(MAX_VISIBLE):
+            # Move cursor back up to start of menu, then clear
+            if lines_drawn > 0:
+                out = CSI + "%dA" % lines_drawn  # move up
+            else:
+                out = ""
+            out += "\r" + CSI + "J"  # go to col 0, clear to end of screen
+            lines_drawn = 0
+
+            visible = min(MAX_VISIBLE, total)
+            for i in range(visible):
                 idx = scroll_offset + i
                 if idx >= total:
                     break
@@ -1996,11 +2013,13 @@ def _session_selector(stdin_fd):
                     out += prefix + HIGHLIGHT + BOLD + label + RST + detail + CLRL + "\n"
                 else:
                     out += prefix + label + detail + CLRL + "\n"
+                lines_drawn += 1
 
             # Scroll indicator
             if total > MAX_VISIBLE:
                 pos = "(%d/%d)" % (cursor + 1, total)
                 out += DIM + "  " + pos + RST + CLRL + "\n"
+                lines_drawn += 1
 
             sys.stdout.write(out)
             sys.stdout.flush()
