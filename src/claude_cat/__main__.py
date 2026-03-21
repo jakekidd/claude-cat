@@ -2440,7 +2440,53 @@ def main():
     sprite_data = None
     if cmd in ("", "--watch", "watch", "--demo", "demo"):
         sprite_data = sprites_mod.load(sprite_name)
-    if cmd == "code":
+    if cmd == "--rename" or (cmd == "code" and len(filtered) > 1 and filtered[1] == "--rename"):
+        # clat --rename <name-or-id> [new-name]
+        import re as _re
+        rename_args = filtered[1:] if cmd == "--rename" else filtered[2:]
+        if not rename_args:
+            print("Usage: clat --rename <session-name-or-id> [new-name]")
+            sys.exit(1)
+        target = rename_args[0]
+        reg = _load_registry()
+        # Find by name or session_id
+        found_sid = None
+        found_name = None
+        is_uuid = bool(_re.match(r"^[0-9a-f]{8}-[0-9a-f]{4}-", target))
+        if is_uuid and target in reg:
+            found_sid = target
+            found_name = reg[target].get("name", "")
+        else:
+            for sid, entry in reg.items():
+                if entry.get("name") == target:
+                    found_sid = sid
+                    found_name = target
+                    break
+        if not found_sid:
+            print("Session '%s' not found in registry." % target)
+            sys.exit(1)
+        # Get new name: from arg or prompt
+        if len(rename_args) > 1:
+            new_name = rename_args[1]
+        else:
+            try:
+                new_name = input("session name (\"%s\"): " % found_name).strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                sys.exit(0)
+            if not new_name:
+                new_name = found_name
+        new_name = _re.sub(r"[^a-z0-9-]", "-", new_name.lower())
+        new_name = _re.sub(r"-+", "-", new_name).strip("-")
+        if not new_name:
+            print("Invalid name.")
+            sys.exit(1)
+        registry_lookup(found_sid)
+        registry_set_name(found_sid, new_name)
+        registry_flush_force()
+        print("%s -> %s" % (found_name or found_sid[:16], new_name))
+        sys.exit(0)
+    elif cmd == "code":
         # Everything after "--" is the child command, OR remaining args passed to claude
         child_args = []
         if "--" in sys.argv:
