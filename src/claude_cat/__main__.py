@@ -2411,20 +2411,42 @@ def main():
         elif len(filtered) > 1:
             code_args = filtered[1:]
             if code_args and not code_args[0].startswith("-"):
-                # Positional name: clat code my-feature
-                name = code_args[0]
+                # Positional arg: name or session UUID
+                import re as _re
+                val = code_args[0]
                 rest = code_args[1:]
-                # Look up name in registry — resume if found, new if not
-                reg = _load_registry()
-                found_sid = None
-                for sid, entry in reg.items():
-                    if entry.get("name") == name:
-                        found_sid = sid
-                        break
-                if found_sid:
-                    child_args = ["claude", "--resume", found_sid] + rest
+                is_uuid = bool(_re.match(r"^[0-9a-f]{8}-[0-9a-f]{4}-", val))
+                if is_uuid:
+                    # UUID: resume directly, prompt for name if not in registry
+                    reg = _load_registry()
+                    if val not in reg:
+                        # Rescue: wrap a native session, ask for a name
+                        default_name = _random_cat_name()
+                        try:
+                            user_input = input("name this session (\"%s\"): " % default_name).strip()
+                        except (EOFError, KeyboardInterrupt):
+                            print()
+                            sys.exit(0)
+                        name = user_input if user_input else default_name
+                        name = _re.sub(r"[^a-z0-9-]", "-", name.lower())
+                        name = _re.sub(r"-+", "-", name).strip("-") or default_name
+                        # Pre-register in registry with the chosen name
+                        registry_lookup(val)
+                        registry_set_name(val, name)
+                        registry_flush_force()
+                    child_args = ["claude", "--resume", val] + rest
                 else:
-                    child_args = ["claude", "--name", name] + rest
+                    # Name: look up in registry — resume if found, new if not
+                    reg = _load_registry()
+                    found_sid = None
+                    for sid, entry in reg.items():
+                        if entry.get("name") == val:
+                            found_sid = sid
+                            break
+                    if found_sid:
+                        child_args = ["claude", "--resume", found_sid] + rest
+                    else:
+                        child_args = ["claude", "--name", val] + rest
             elif "--resume" in code_args:
                 # Explicit --resume: check if value exists, suggest close matches
                 idx = code_args.index("--resume")
