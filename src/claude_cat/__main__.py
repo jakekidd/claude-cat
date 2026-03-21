@@ -1948,20 +1948,21 @@ def _session_selector(stdin_fd):
         except OSError:
             pass
 
-    # Sessions: named via clat code, not currently running, sorted by last_seen desc
+    # All sessions not currently running, sorted by last_seen desc
+    # Display session name if set, otherwise session_id prefix
     sessions = []
     for sid, entry in reg.items():
         if sid in active_sids:
             continue
-        name = entry.get("name", "")
-        if not name or not entry.get("wrapped"):
-            continue  # skip auto-generated cat names, only show clat code sessions
+        name = entry.get("name", "") or sid[:16]
         sessions.append({
             "sid": sid,
             "name": name,
+            "has_name": bool(entry.get("name")),
             "last_seen": entry.get("last_seen", 0),
             "tokens": entry.get("tokens", 0),
             "turns": entry.get("turns", 0),
+            "project": entry.get("project", ""),
         })
     sessions.sort(key=lambda s: s["last_seen"], reverse=True)
 
@@ -2006,11 +2007,14 @@ def _session_selector(stdin_fd):
                     else:
                         tok_s = ""
                     turns_s = "%d turns" % s["turns"] if s["turns"] else ""
-                    parts = [p for p in (turns_s, tok_s) if p]
+                    proj_s = s.get("project", "")
+                    parts = [p for p in (proj_s, turns_s, tok_s) if p]
                     detail = "  " + DIM + "  ".join(parts) + RST if parts else ""
 
                 if selected:
                     out += prefix + HIGHLIGHT + BOLD + label + RST + detail + CLRL + "\n"
+                elif idx > 0 and not sessions[idx - 1].get("has_name"):
+                    out += prefix + DIM + label + RST + detail + CLRL + "\n"
                 else:
                     out += prefix + label + detail + CLRL + "\n"
                 lines_drawn += 1
