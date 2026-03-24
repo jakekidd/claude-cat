@@ -275,6 +275,59 @@ def registry_is_wrapped(session_id):
     return entry.get("wrapped", False)
 
 
+def registry_get_approve_mode(session_id):
+    """Get approve mode for a session: 'manual' (default), 'guarded', or 'automatic'."""
+    entry = _registry.get(session_id, {})
+    return entry.get("approve_mode", "manual")
+
+
+def registry_set_approve_mode(session_id, mode):
+    """Set approve mode for a session."""
+    global _registry_dirty
+    if session_id in _registry and mode in ("manual", "guarded", "automatic"):
+        _registry[session_id]["approve_mode"] = mode
+        _registry_dirty = True
+
+
+# Guarded mode: commands/patterns that require manual approval even within repo
+GUARDED_BLACKLIST = (
+    "rm -rf", "rm -r /", "kill ", "pkill ", "killall ",
+    "git push --force", "git push -f", "git reset --hard",
+    "chmod ", "chown ", "curl ", "wget ",
+    "sudo ", "su ", "eval ", "> /dev/",
+)
+
+
+def _is_guarded_safe(tool, tool_input, cwd):
+    """Check if a tool call is safe under guarded mode (within repo, not blacklisted)."""
+    if tool in ("Read", "Grep", "Glob", "Agent"):
+        return True  # read-only or delegation tools always safe
+    if tool == "Bash":
+        cmd = tool_input.get("command", "")
+        # Check blacklist
+        for pat in GUARDED_BLACKLIST:
+            if pat in cmd:
+                return False
+        # Check if command references paths outside cwd
+        # Simple heuristic: if absolute paths appear that aren't under cwd
+        import shlex
+        try:
+            parts = shlex.split(cmd)
+        except ValueError:
+            parts = cmd.split()
+        for part in parts:
+            if part.startswith("/") and cwd and not part.startswith(cwd):
+                return False
+        return True
+    if tool in ("Edit", "Write"):
+        path = tool_input.get("file_path", "")
+        if path and cwd and not path.startswith(cwd):
+            return False
+        return True
+    # Unknown tools: ask
+    return False
+
+
 def registry_touch(session_id):
     """Bump last_seen for a session."""
     global _registry_dirty
@@ -544,6 +597,7 @@ class Cat:
         self.flashing = False  # meow flash (5s color cycling)
         self.flash_end = 0.0
         self.last_wrapper_ts = 0.0  # last WrapperState event timestamp
+        self.subagent_depth = 0    # number of active subagents
         # Reaction = brief face override from events (expires)
         self.reaction = None
         self.reaction_end = 0.0
@@ -849,11 +903,35 @@ class Cat:
                 self.reaction_end = time.time() + 8.0
                 self.reaction_msg = "asking..."
                 _log("[%s] AskUserQuestion -> idle/asking (answer in session window)", sid_short)
+            elif self.subagent_depth > 0:
+                # Subagent permission — can't route response to subagent via main stdin
+                _log("[%s] subagent permission (depth=%d) tool=%s — skipping prompt", sid_short, self.subagent_depth, tool)
             else:
-                self.permission_pending = True
-                self.permission_tool = tool
-                self.permission_input = data.get("tool_input", {})
-                _log("[%s] permission dot ON tool=%s", sid_short, tool)
+                # Check auto-approve mode
+                mode = registry_get_approve_mode(self.session_id)
+                if mode == "automatic":
+                    # Auto-approve: write "2" (Always) to response file
+                    try:
+                        resp_path = os.path.join(STATE_DIR, STATE_PREFIX + self.session_id + "-response")
+                        with open(resp_path, "w") as f:
+                            f.write("2")
+                    except OSError:
+                        pass
+                    _log("[%s] auto-approved (automatic mode) tool=%s", sid_short, tool)
+                elif mode == "guarded" and _is_guarded_safe(tool, data.get("tool_input", {}), self.cwd):
+                    # Guarded: safe operation, auto-approve
+                    try:
+                        resp_path = os.path.join(STATE_DIR, STATE_PREFIX + self.session_id + "-response")
+                        with open(resp_path, "w") as f:
+                            f.write("1")
+                    except OSError:
+                        pass
+                    _log("[%s] guarded-approved tool=%s", sid_short, tool)
+                else:
+                    self.permission_pending = True
+                    self.permission_tool = tool
+                    self.permission_input = data.get("tool_input", {})
+                    _log("[%s] permission dot ON tool=%s", sid_short, tool)
         elif ev == "SessionEnd":
             self.dead = True
             self.dead_since = time.time()
@@ -863,6 +941,8 @@ class Cat:
             self.reaction_msg = ""
             _log("[%s] SessionEnd -> dead", sid_short)
         elif ev == "SubagentStop":
+            self.subagent_depth = max(0, self.subagent_depth - 1)
+            _log("[%s] SubagentStop depth=%d", sid_short, self.subagent_depth)
             # Only react if cat is actively working (not idle/sleeping)
             if old_state not in ("idle", "compacting"):
                 self.reaction = "happy"
@@ -879,8 +959,10 @@ class Cat:
                 self.frame_idx = 0
                 self.next_frame = time.time() + 0.5
         elif ev == "SubagentStart":
+            self.subagent_depth += 1
             self.state = "thinking"
             self.frame_idx = 0
+            _log("[%s] SubagentStart depth=%d", sid_short, self.subagent_depth)
         elif ev == "PreCompact":
             self.state = "compacting"
             self.frame_idx = 0
@@ -1164,6 +1246,11 @@ class Litter:
         self.cat_order = []
         self.graveyard = _load_graveyard()
         self.prompt_queue = []  # [{session_id, name, color, tool, input, ts}]
+        # Cat selector state
+        self.selected_idx = 0       # index into visible wrapped cats
+        self.input_mode = False     # typing into input buffer
+        self.input_buffer = ""      # accumulated text for input mode
+        self.input_target_sid = ""  # session_id receiving input
 
     def scan(self):
         files = find_session_files()
@@ -1586,6 +1673,29 @@ class Litter:
         except OSError:
             term_w = 80
 
+        if self.input_mode:
+            # Input mode: show text entry for the target cat
+            target_cat = self.cats.get(self.input_target_sid)
+            target_name = target_cat.name if target_cat else self.input_target_sid[:16]
+            target_color = target_cat.color if target_cat else 208
+            tfg = CSI + "38;5;%dm" % target_color
+            out = ""
+            header = " send to %s " % target_name
+            pad = max(0, term_w - len(header) - 2)
+            out += tfg + DIM + "\u2500\u2500" + RST + tfg + BOLD + header + RST + tfg + DIM + "\u2500" * pad + RST + CLRL + "\n"
+            # Input line with cursor
+            cursor = "\u2588"  # block cursor
+            buf_display = self.input_buffer
+            max_buf = term_w - 6
+            if len(buf_display) > max_buf:
+                buf_display = buf_display[-(max_buf - 1):]
+            out += "  > " + buf_display + cursor + CLRL + "\n"
+            # Pad remaining lines
+            for _ in range(self.PROMPT_RESERVED_LINES - 3):
+                out += CLRL + "\n"
+            out += "  " + DIM + "enter=send  esc=cancel" + RST + CLRL + "\n"
+            return out
+
         if not self.prompt_queue:
             # Empty reservation: blank lines to hold space
             return (CLRL + "\n") * self.PROMPT_RESERVED_LINES
@@ -1626,6 +1736,63 @@ class Litter:
         # Pad line
         out += CLRL + "\n"
         return out
+
+    def _get_selectable_sids(self):
+        """Get ordered list of session_ids that can be selected (wrapped, alive)."""
+        return [sid for sid in self.cat_order
+                if sid in self.cats and self.cats[sid].cwd
+                and not self.cats[sid].dead and registry_is_wrapped(sid)]
+
+    def cycle_cat(self, direction):
+        """Move cat selector up (+1) or down (-1)."""
+        sids = self._get_selectable_sids()
+        if not sids:
+            return
+        self.selected_idx = (self.selected_idx + direction) % len(sids)
+
+    def get_selected_sid(self):
+        """Get the currently selected session_id."""
+        sids = self._get_selectable_sids()
+        if not sids:
+            return None
+        self.selected_idx = min(self.selected_idx, len(sids) - 1)
+        return sids[self.selected_idx]
+
+    def start_input(self):
+        """Enter input mode for the selected cat."""
+        sid = self.get_selected_sid()
+        if sid:
+            self.input_mode = True
+            self.input_buffer = ""
+            self.input_target_sid = sid
+
+    def send_input(self):
+        """Send input buffer to the target cat via response file."""
+        if self.input_target_sid and self.input_buffer:
+            resp_path = os.path.join(STATE_DIR, STATE_PREFIX + self.input_target_sid + "-response")
+            try:
+                with open(resp_path, "w") as f:
+                    f.write(self.input_buffer)
+            except OSError:
+                pass
+            _log("[input] sent '%s' to %s", self.input_buffer[:40], self.input_target_sid[:8])
+        self.input_mode = False
+        self.input_buffer = ""
+        self.input_target_sid = ""
+
+    def cancel_input(self):
+        """Cancel input mode without sending."""
+        self.input_mode = False
+        self.input_buffer = ""
+        self.input_target_sid = ""
+
+    def toggle_approve_mode(self, mode):
+        """Set approve mode on the selected cat."""
+        sid = self.get_selected_sid()
+        if sid:
+            registry_set_approve_mode(sid, mode)
+            registry_flush_force()
+            _log("[approve] %s -> %s", sid[:8], mode)
 
     def handle_prompt_response(self, key):
         """Handle user input for the active prompt. Returns session_id if responded."""
@@ -1744,10 +1911,20 @@ class Litter:
             else:
                 msg = raw_msg
 
-        # Name line: bold cat name, star if wrapped via clat code
+        # Name line: bold cat name, star if wrapped, approve mode badge, selector
         wrapped = registry_is_wrapped(cat.session_id) if cat.session_id else False
         star = " *" if wrapped else ""
-        name_text = fg + BOLD + cat.name + RST + DIM + star + RST if cat.name else ""
+        # Approve mode badge
+        mode = registry_get_approve_mode(cat.session_id) if cat.session_id else "manual"
+        mode_badge = ""
+        if mode == "automatic":
+            mode_badge = "  " + CSI + "32m" + "[A]" + RST
+        elif mode == "guarded":
+            mode_badge = "  " + CSI + "33m" + "[G]" + RST
+        # Selected indicator
+        is_selected = hasattr(self, "selected_idx") and cat.session_id == self.get_selected_sid()
+        sel_prefix = CSI + "7m" + ">" + RST + " " if is_selected else ""
+        name_text = sel_prefix + fg + BOLD + cat.name + RST + DIM + star + RST + mode_badge if cat.name else ""
 
         # Per-cat burn rate for the cwd line
         rate_s = ""
@@ -2563,10 +2740,44 @@ def litter_mode(sprite_data=None):
             import select
             if select.select([fd], [], [], 0.1)[0]:
                 try:
-                    ch = os.read(fd, 1).decode("utf-8", errors="ignore")
-                    # Route to prompt handler first if prompt is active
-                    if litter.prompt_queue and ch in ("y", "Y", "a", "A", "n", "N", "1", "2", "3", "\r", "\n"):
+                    raw = os.read(fd, 1)
+                    # Read escape sequences (arrow keys, etc.)
+                    if raw == b"\x1b":
+                        import select as _sel2
+                        if _sel2.select([fd], [], [], 0.05)[0]:
+                            raw += os.read(fd, 4)
+                    ch = raw.decode("utf-8", errors="ignore")
+
+                    if litter.input_mode:
+                        # Input mode: all keys go to buffer
+                        if ch in ("\r", "\n"):
+                            litter.send_input()
+                        elif ch == "\x1b" or ch == "\x03":
+                            litter.cancel_input()
+                        elif ch == "\x7f" or ch == "\x08":  # backspace
+                            litter.input_buffer = litter.input_buffer[:-1]
+                        elif len(ch) == 1 and ch >= " ":
+                            litter.input_buffer += ch
+                    elif litter.prompt_queue and ch in ("y", "Y", "n", "N", "1", "2", "3", "\r", "\n"):
+                        # Permission prompt response
                         litter.handle_prompt_response(ch)
+                    elif ch == "\x1b[A" or ch == "\x1b[Z":  # up arrow or shift-tab
+                        litter.cycle_cat(-1)
+                    elif ch == "\x1b[B" or ch == "\t":  # down arrow or tab
+                        litter.cycle_cat(1)
+                    elif ch in ("\r", "\n"):
+                        # Enter on selected cat: open input mode
+                        litter.start_input()
+                    elif ch in ("m", "M"):
+                        litter.toggle_approve_mode("manual")
+                    elif ch in ("g", "G"):
+                        litter.toggle_approve_mode("guarded")
+                    elif ch in ("a", "A"):
+                        # A: if prompt active -> Always, else toggle automatic mode
+                        if litter.prompt_queue:
+                            litter.handle_prompt_response("a")
+                        else:
+                            litter.toggle_approve_mode("automatic")
                     elif ch in ("c", "C"):
                         # Spread colors: shuffle palette, assign evenly
                         cats = [c for c in litter.cats.values() if not c.dead]
