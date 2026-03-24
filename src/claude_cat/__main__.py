@@ -162,7 +162,7 @@ def _save_graveyard(graveyard):
     os.replace(tmp, GRAVEYARD_FILE)
 
 
-STATE_DIR = tempfile.gettempdir()
+STATE_DIR = os.path.join(Path.home(), ".claude-cat", "state")
 STATE_PREFIX = "claude-cat-"
 STATE_FILE = os.path.join(STATE_DIR, "claude-cat.json")
 
@@ -222,6 +222,12 @@ def registry_lookup(session_id):
     entry = _registry.get(session_id)
     if entry:
         return entry["name"], entry["color"]
+    # Re-check disk: another process (clat code wrapper) may have registered it
+    disk_reg = _load_registry()
+    disk_entry = disk_reg.get(session_id)
+    if disk_entry:
+        _registry[session_id] = disk_entry
+        return disk_entry["name"], disk_entry["color"]
     # New session: generate name, pick a color not already in use
     name = cat_name(session_id)
     used_colors = {e.get("color") for e in _registry.values()}
@@ -381,6 +387,22 @@ def cat_name(session_id):
     import hashlib
     h = int(hashlib.md5(session_id.encode()).hexdigest()[:8], 16)
     return _NAME_ADJ[h % len(_NAME_ADJ)] + " " + _NAME_NOUN[(h >> 8) % len(_NAME_NOUN)]
+
+
+_NAME_ADJ_SET = set(_NAME_ADJ)
+_NAME_NOUN_SET = set(_NAME_NOUN)
+
+
+def is_generated_name(name):
+    """Check if a name was auto-generated (adj + noun from word lists)."""
+    parts = name.split(" ")
+    if len(parts) == 2 and parts[0] in _NAME_ADJ_SET and parts[1] in _NAME_NOUN_SET:
+        return True
+    # Also check hyphenated form (sanitized names)
+    parts = name.split("-")
+    if len(parts) == 2 and parts[0] in _NAME_ADJ_SET and parts[1] in _NAME_NOUN_SET:
+        return True
+    return False
 
 
 def cat_color(session_id):
@@ -811,10 +833,18 @@ class Cat:
                 self.overlay = "bulb"
                 self.overlay_end = time.time() + OVERLAYS["bulb"]["duration"]
         elif ev == "PermissionRequest":
-            self.permission_pending = True
-            self.permission_tool = tool
-            self.permission_input = data.get("tool_input", {})
-            _log("[%s] permission dot ON tool=%s", sid_short, tool)
+            if tool == "AskUserQuestion":
+                # Not a permission — it's a question needing typed input in the session window
+                self.state = "idle"
+                self.reaction = "surprised"
+                self.reaction_end = time.time() + 8.0
+                self.reaction_msg = "asking..."
+                _log("[%s] AskUserQuestion -> idle/asking (answer in session window)", sid_short)
+            else:
+                self.permission_pending = True
+                self.permission_tool = tool
+                self.permission_input = data.get("tool_input", {})
+                _log("[%s] permission dot ON tool=%s", sid_short, tool)
         elif ev == "SessionEnd":
             self.dead = True
             self.dead_since = time.time()
@@ -848,6 +878,13 @@ class Cat:
         elif ev == "PostCompact":
             self.state = "thinking"
             self.frame_idx = 0
+        elif ev == "Interrupted":
+            self.state = "idle"
+            self.sleeping = False
+            self.reaction = "interrupted"
+            self.reaction_end = time.time() + self.reactions.get("interrupted", {}).get("hold", 10.0)
+            self.reaction_msg = "interrupted"
+            _log("[%s] Interrupted event -> idle/interrupted", sid_short)
         elif ev == "Meow":
             self.flashing = True
             self.flash_end = time.time() + 5.0
@@ -979,8 +1016,8 @@ class Cat:
             self.frame_idx = 0
             dirty = True
 
-        # active/thinking + 2min quiet => idle + interrupted reaction
-        if self.state == "thinking" and not self.reaction and quiet > 120:
+        # active/thinking + 45s quiet => idle + interrupted reaction (fallback for non-wrapped sessions)
+        if self.state == "thinking" and not self.reaction and quiet > 45:
             _log("[%s] timeout: thinking -> idle/interrupted (%.0fs quiet)", self.session_id[:8], quiet)
             self.reaction = "interrupted"
             self.reaction_end = now + self.reactions.get("interrupted", {}).get("hold", 10.0)
@@ -1127,7 +1164,9 @@ class Litter:
                     elif ev == "PostToolUse" and age < 30:
                         cat.state = TOOL_STATES.get(tool, "cooking")
                         _log("[scan] new cat %s: %s (PostToolUse/%s %.0fs ago)", sid[:8], cat.state, tool, age)
-                    elif ev == "UserPromptSubmit" and age < 30:
+                    elif ev == "UserPromptSubmit":
+                        # No age gate: UserPromptSubmit without a Stop means still thinking.
+                        # The timeout fallback (45s) handles stale cases.
                         cat.state = "thinking"
                         _log("[scan] new cat %s: thinking (UserPromptSubmit %.0fs ago)", sid[:8], age)
                     else:
@@ -1258,8 +1297,17 @@ class Litter:
         if not hasattr(self, "_last_name_sync") or now - self._last_name_sync > 10:
             self._last_name_sync = now
             disk_reg = _load_registry()
+            # Merge disk into in-memory _registry so flush won't overwrite
+            for sid, disk_entry in disk_reg.items():
+                if sid in _registry:
+                    for key in ("name", "color", "wrapped"):
+                        dv = disk_entry.get(key)
+                        if dv is not None and dv != _registry[sid].get(key):
+                            _registry[sid][key] = dv
+                else:
+                    _registry[sid] = disk_entry
             for cat in self.cats.values():
-                entry = disk_reg.get(cat.session_id, {})
+                entry = _registry.get(cat.session_id, {})
                 disk_name = entry.get("name", "")
                 if disk_name and disk_name != cat.name:
                     _log("[sync] %s name: %s -> %s", cat.session_id[:8], cat.name, disk_name)
@@ -1475,23 +1523,21 @@ class Litter:
         result.extend(lines[-bot_n:] if bot_n > 0 else [])
         return result
 
+    PROMPT_RESERVED_LINES = 8  # 1 header + 5 content + 1 options + 1 pad
+
     def _render_prompt_widget(self, now):
-        """Render the permission prompt widget at the bottom."""
-        if not self.prompt_queue:
-            return ""
-        prompt = self.prompt_queue[0]  # Show first in queue
+        """Render the permission prompt area. Always returns PROMPT_RESERVED_LINES lines for layout stability."""
         try:
             term_w = os.get_terminal_size().columns
-            term_h = os.get_terminal_size().lines
         except OSError:
-            term_w, term_h = 80, 24
+            term_w = 80
 
-        # Calculate available lines for content (dynamic based on screen)
-        # Count lines used by cats above (rough: each cat ~10 lines + headers)
-        cat_count = sum(1 for c in self.cats.values() if c.cwd and not c.dead)
-        cats_lines = cat_count * 11 + 5  # rough estimate
-        available = max(6, min(12, term_h - cats_lines))
-        content_lines = max(3, available - 3)  # reserve 3 for options
+        if not self.prompt_queue:
+            # Empty reservation: blank lines to hold space
+            return (CLRL + "\n") * self.PROMPT_RESERVED_LINES
+
+        prompt = self.prompt_queue[0]  # Show first in queue
+        content_lines = self.PROMPT_RESERVED_LINES - 3  # header + options + pad
 
         # Format content
         raw_lines = self._format_prompt_content(prompt)
@@ -1514,7 +1560,7 @@ class Litter:
         pad = max(0, term_w - len(header) - 2)
         out += fg + DIM + "\u2500\u2500" + RST + fg + BOLD + header + RST + fg + DIM + "\u2500" * pad + RST + CLRL + "\n"
 
-        # Content lines (padded to static height)
+        # Content lines (padded to fixed height)
         for i in range(content_lines):
             if i < len(display):
                 out += "  " + DIM + display[i] + RST + CLRL + "\n"
@@ -1523,6 +1569,8 @@ class Litter:
 
         # Options
         out += "  " + CSI + "32m" + BOLD + "> [Y]es" + RST + "  [A]lways  [N]o" + CLRL + "\n"
+        # Pad line
+        out += CLRL + "\n"
         return out
 
     def handle_prompt_response(self, key):
@@ -1660,27 +1708,32 @@ class Litter:
 
         labels = [name_text, state_text]
         if show_dir:
+            # Merge cwd + rate + session_id + last:tool into one line
             cwd_line = fg + cwd_short + RST if cwd_short else ""
             if rate_s:
                 cwd_line += "  " + DIM + rate_s + RST
+            cwd_line += "  " + id_text
             labels.append(cwd_line)
-        labels.append(id_text)
+        else:
+            labels.append(id_text)
         if stats:
             labels.append(stats)
         if msg:
             labels.append(DIM + msg + RST)
-        # Last log line for this cat
+        # Separator + debug info below
+        try:
+            sep_w = os.get_terminal_size().columns
+        except OSError:
+            sep_w = 80
+        sprite_w = len(sprite[0]) if sprite else 14
+        sep_len = max(5, sep_w - sprite_w - 4)
+        labels.append(DIM + "\u2501" * sep_len + RST)
+        # Debug log line
         last_log = cat_last_log(cat.session_id)
         if last_log:
-            # Strip the [sid] prefix for display since we're already next to the cat
             import re
             log_display = re.sub(r"^\[[0-9a-f]{8}\] ", "", last_log)
-            try:
-                tw = os.get_terminal_size().columns
-            except OSError:
-                tw = 80
-            sw = len(sprite[0]) if sprite else 14
-            max_log = max(5, tw - sw - 6)
+            max_log = max(5, sep_len)
             if len(log_display) > max_log:
                 log_display = log_display[:max(2, max_log - 3)] + "..."
             labels.append(DIM + log_display + RST)
@@ -1741,9 +1794,8 @@ class Litter:
                     out += self._render_cat(cat, now, show_dir=True)
                     out += CLRL + "\n"
 
-        # Permission prompt widget
-        if self.prompt_queue:
-            out += self._render_prompt_widget(now)
+        # Permission prompt widget (always rendered for layout stability)
+        out += self._render_prompt_widget(now)
 
         # Graveyard — hide cats that are currently alive
         alive_names = {cat.name for cat in self.cats.values() if not cat.dead}
@@ -1852,6 +1904,7 @@ def hook_mode():
         tool_input = data.get("tool_input")
         if tool_input and data.get("hook_event_name") == "PermissionRequest":
             state["tool_input"] = tool_input
+        os.makedirs(STATE_DIR, exist_ok=True)
         with open(state_path, "w") as f:
             json.dump(state, f)
     except Exception:
@@ -2107,7 +2160,29 @@ def code_mode(child_args):
             sys.exit(0)
         action, value = result
         if action == "resume":
-            child_args.extend(["--resume", value])
+            # Check if session has a generated name — offer to rename
+            reg = _load_registry()
+            entry = reg.get(value, {})
+            cur_name = entry.get("name", "")
+            if cur_name and is_generated_name(cur_name):
+                import re as _re_sel
+                try:
+                    user_input = input("rename \"%s\"? (enter to keep): " % cur_name).strip()
+                except (EOFError, KeyboardInterrupt):
+                    print()
+                    sys.exit(0)
+                if user_input:
+                    new_name = _re_sel.sub(r"[^a-z0-9-]", "-", user_input.lower())
+                    new_name = _re_sel.sub(r"-+", "-", new_name).strip("-")
+                    if new_name:
+                        registry_lookup(value)
+                        registry_set_name(value, new_name)
+                        registry_flush_force()
+                        cur_name = new_name
+            if cur_name and not is_generated_name(cur_name):
+                child_args.extend(["--resume", value, "--name", cur_name])
+            else:
+                child_args.extend(["--resume", value])
         elif action == "new":
             child_args.extend(["--name", value])
 
@@ -2150,7 +2225,13 @@ def code_mode(child_args):
     wrap_session_name = None
     for i, arg in enumerate(child_args):
         if arg == "--resume" and i + 1 < len(child_args):
-            wrap_session_id = child_args[i + 1]
+            val = child_args[i + 1]
+            # UUID: use as session ID. Name: infer as session name, detect real ID from state files.
+            import re as _re2
+            if _re2.match(r'^[0-9a-f]{8}-[0-9a-f]{4}-', val):
+                wrap_session_id = val
+            else:
+                wrap_session_name = wrap_session_name or val
         elif arg in ("--name", "-n") and i + 1 < len(child_args):
             wrap_session_name = child_args[i + 1]
     # Track existing state files to detect new sessions
@@ -2167,6 +2248,10 @@ def code_mode(child_args):
     # Set our terminal to raw mode
     tty.setraw(stdin_fd)
 
+    # Interrupt detection state
+    _last_escape_ts = 0.0  # when user last pressed Escape
+    _output_buf = b""  # rolling buffer of recent stdout for pattern matching
+
     try:
         while True:
             try:
@@ -2181,6 +2266,9 @@ def code_mode(child_args):
                     if not data:
                         break
                     os.write(master_fd, data)
+                    # Track Escape key presses (0x1b standalone, not part of arrow/function keys)
+                    if b"\x1b" in data and len(data) == 1:
+                        _last_escape_ts = time.time()
                 except OSError:
                     break
 
@@ -2191,6 +2279,28 @@ def code_mode(child_args):
                     if not data:
                         break
                     os.write(sys.stdout.fileno(), data)
+                    # Detect interrupt: check rolling buffer for "Interrupted" after recent Escape
+                    if wrap_session_id and _last_escape_ts and time.time() - _last_escape_ts < 3.0:
+                        _output_buf = (_output_buf + data)[-4096:]
+                        if b"Interrupted" in _output_buf:
+                            _last_escape_ts = 0.0
+                            _output_buf = b""
+                            try:
+                                state_path = state_file_for(wrap_session_id)
+                                os.makedirs(STATE_DIR, exist_ok=True)
+                                with open(state_path, "w") as sf:
+                                    json.dump({
+                                        "event": "Interrupted",
+                                        "tool": "",
+                                        "ts": int(time.time() * 1000),
+                                        "session_id": wrap_session_id,
+                                        "cwd": "",
+                                        "transcript_path": "",
+                                    }, sf)
+                            except OSError:
+                                pass
+                    else:
+                        _output_buf = b""
                 except OSError:
                     break
 
@@ -2515,13 +2625,12 @@ def main():
                 rest = code_args[1:]
                 is_uuid = bool(_re.match(r"^[0-9a-f]{8}-[0-9a-f]{4}-", val))
                 if is_uuid:
-                    # UUID: resume directly, prompt for name if not in registry
+                    # UUID: resume directly, prompt for name if missing or auto-generated
                     reg = _load_registry()
                     entry = reg.get(val, {})
                     name = entry.get("name", "")
-                    if not name:
-                        # Rescue: wrap a native session, ask for a name
-                        default_name = _random_cat_name()
+                    if not name or is_generated_name(name):
+                        default_name = name or _random_cat_name()
                         try:
                             user_input = input("name this session (\"%s\"): " % default_name).strip()
                         except (EOFError, KeyboardInterrupt):
@@ -2544,27 +2653,60 @@ def main():
                             found_sid = sid
                             break
                     if found_sid:
-                        child_args = ["claude", "--resume", found_sid] + rest
+                        child_args = ["claude", "--resume", found_sid, "--name", val] + rest
                     else:
                         child_args = ["claude", "--name", val] + rest
             elif "--resume" in code_args:
-                # Explicit --resume: check if value exists, suggest close matches
+                # Explicit --resume: resolve UUID or name
                 idx = code_args.index("--resume")
                 if idx + 1 < len(code_args):
                     val = code_args[idx + 1]
+                    rest = code_args[:idx] + code_args[idx + 2:]
                     reg = _load_registry()
-                    if val not in reg:
+                    if val in reg:
+                        # Direct UUID match — prompt if name is auto-generated
+                        name = reg[val].get("name", "")
+                        if not name or is_generated_name(name):
+                            default_name = name or _random_cat_name()
+                            try:
+                                user_input = input("name this session (\"%s\"): " % default_name).strip()
+                            except (EOFError, KeyboardInterrupt):
+                                print()
+                                sys.exit(0)
+                            import re as _re_uuid
+                            name = user_input if user_input else default_name
+                            name = _re_uuid.sub(r"[^a-z0-9-]", "-", name.lower())
+                            name = _re_uuid.sub(r"-+", "-", name).strip("-") or default_name
+                            registry_set_name(val, name)
+                            registry_flush_force()
+                        child_args = ["claude", "--resume", val, "--name", name] + rest
+                    else:
                         # Search by name or partial session_id
+                        found_sid = None
+                        found_name = None
                         matches = []
                         for sid, entry in reg.items():
+                            if entry.get("name") == val:
+                                found_sid = sid
+                                found_name = val
+                                break
                             if val in sid or val in entry.get("name", ""):
                                 matches.append((sid, entry.get("name", "")))
-                        if matches:
+                        if found_sid:
+                            child_args = ["claude", "--resume", found_sid, "--name", found_name] + rest
+                        elif len(matches) == 1:
+                            # Unambiguous partial match — use it
+                            child_args = ["claude", "--resume", matches[0][0], "--name", matches[0][1] or matches[0][0][:16]] + rest
+                        elif matches:
                             print("Session '%s' not found. Did you mean:" % val)
                             for sid, n in matches[:3]:
                                 print("  %s  (%s)" % (n or sid[:16], sid[:16]))
                             sys.exit(1)
-                child_args = ["claude"] + code_args
+                        else:
+                            # No match at all — pass through, let Claude Code resolve
+                            child_args = ["claude", "--resume", val, "--name", val] + rest
+                else:
+                    child_args = ["claude"] + code_args
             else:
                 child_args = ["claude"] + code_args
         code_mode(child_args)
