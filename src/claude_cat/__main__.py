@@ -330,6 +330,14 @@ HOOK_EVENTS = [
 
 BLOCKS = " \u2597\u2596\u2584\u259d\u2590\u259e\u259f\u2598\u259a\u258c\u2599\u2580\u259c\u259b\u2588"
 
+# Stdout spinner chars emitted by Claude Code during thinking
+SPINNER_CHARS = set("\u00b7\u273b\u273d\u2736\u2733\u2722")  # ·✻✽✶✳✢
+# ANSI SGR stripper for stdout pattern matching
+import re as _re_ansi
+_ANSI_RE = _re_ansi.compile(r'\x1b\[[^m]*m')
+# Error patterns in Claude Code stdout
+_ERROR_PATTERNS = (b"API Error", b"Rate limit", b"Request too large", b"Overloaded")
+
 # Tool name -> cat state
 TOOL_STATES = {
     "Read": "reading",
@@ -535,6 +543,7 @@ class Cat:
         self.permission_input = {}  # tool_input for pending permission
         self.flashing = False  # meow flash (5s color cycling)
         self.flash_end = 0.0
+        self.last_wrapper_ts = 0.0  # last WrapperState event timestamp
         # Reaction = brief face override from events (expires)
         self.reaction = None
         self.reaction_end = 0.0
@@ -885,6 +894,47 @@ class Cat:
             self.reaction_end = time.time() + self.reactions.get("interrupted", {}).get("hold", 10.0)
             self.reaction_msg = "interrupted"
             _log("[%s] Interrupted event -> idle/interrupted", sid_short)
+        elif ev == "WrapperState":
+            ws = data.get("wrapper_state", "")
+            self.last_wrapper_ts = time.time()
+            if ws == "thinking":
+                self.state = "thinking"
+                self.sleeping = False
+                self.frame_idx = 0
+            elif ws == "idle":
+                self.state = "idle"
+                thought_s = data.get("thought_seconds", 0)
+                if thought_s:
+                    self.reaction = "happy"
+                    self.reaction_end = time.time() + 4.0
+                    self.reaction_msg = "thought %ds" % thought_s
+                    self.overlay = "bulb"
+                    self.overlay_end = time.time() + 3.0
+                else:
+                    self.reaction = "happy"
+                    self.reaction_end = time.time() + 4.0
+                    self.reaction_msg = "done!"
+                    self.overlay = "bulb"
+                    self.overlay_end = time.time() + 3.0
+            elif ws == "compacting":
+                self.state = "compacting"
+                self.frame_idx = 0
+            elif ws == "asking":
+                self.state = "idle"
+                self.reaction = "surprised"
+                self.reaction_end = time.time() + 8.0
+                self.reaction_msg = "asking..."
+            elif ws == "error":
+                self.reaction = "error"
+                self.reaction_end = time.time() + 4.0
+                self.reaction_msg = data.get("error_type", "error")
+            elif ws == "interrupted":
+                self.state = "idle"
+                self.sleeping = False
+                self.reaction = "interrupted"
+                self.reaction_end = time.time() + self.reactions.get("interrupted", {}).get("hold", 10.0)
+                self.reaction_msg = "interrupted"
+            _log("[%s] WrapperState: %s", sid_short, ws)
         elif ev == "Meow":
             self.flashing = True
             self.flash_end = time.time() + 5.0
@@ -1008,25 +1058,29 @@ class Cat:
         # ── Timeouts ──
         quiet = now - self.last_event
         active = self.state not in ("idle", "compacting")
+        is_wrapped = registry_is_wrapped(self.session_id) if self.session_id else False
 
-        # active/reading|cooking|browsing + 15s quiet => active/thinking
-        if self.state in ("reading", "cooking", "browsing") and not self.reaction and quiet > 15:
-            _log("[%s] timeout: %s -> thinking (%.0fs quiet)", self.session_id[:8], self.state, quiet)
-            self.state = "thinking"
-            self.frame_idx = 0
-            dirty = True
+        # Timeout-based state transitions only for unwrapped sessions.
+        # Wrapped sessions get state from stdout parsing (WrapperState events).
+        if not is_wrapped:
+            # active/reading|cooking|browsing + 15s quiet => active/thinking
+            if self.state in ("reading", "cooking", "browsing") and not self.reaction and quiet > 15:
+                _log("[%s] timeout: %s -> thinking (%.0fs quiet)", self.session_id[:8], self.state, quiet)
+                self.state = "thinking"
+                self.frame_idx = 0
+                dirty = True
 
-        # active/thinking + 45s quiet => idle + interrupted reaction (fallback for non-wrapped sessions)
-        if self.state == "thinking" and not self.reaction and quiet > 45:
-            _log("[%s] timeout: thinking -> idle/interrupted (%.0fs quiet)", self.session_id[:8], quiet)
-            self.reaction = "interrupted"
-            self.reaction_end = now + self.reactions.get("interrupted", {}).get("hold", 10.0)
-            self.reaction_msg = "interrupted"
-            self.state = "idle"
-            self.sleeping = False
-            dirty = True
+            # active/thinking + 45s quiet => idle + interrupted reaction
+            if self.state == "thinking" and not self.reaction and quiet > 45:
+                _log("[%s] timeout: thinking -> idle/interrupted (%.0fs quiet)", self.session_id[:8], quiet)
+                self.reaction = "interrupted"
+                self.reaction_end = now + self.reactions.get("interrupted", {}).get("hold", 10.0)
+                self.reaction_msg = "interrupted"
+                self.state = "idle"
+                self.sleeping = False
+                dirty = True
 
-        # idle + 10min => sleeping (visual only, label stays "idle")
+        # idle + 10min => sleeping (visual only, applies to all sessions)
         # Guard: don't sleep if we just set a reaction (e.g. interrupted)
         if self.state == "idle" and not self.sleeping and not self.reaction and quiet > 600:
             _log("[%s] timeout: idle -> sleeping (%.0fs quiet)", self.session_id[:8], quiet)
@@ -1758,15 +1812,20 @@ class Litter:
             now = time.time()
         out = HOME + HIDE
 
-        # Filter valid cats
+        # Filter valid cats — split wrapped (full rendering) vs unwrapped (text-only)
         valid = [(sid, self.cats[sid]) for sid in self.cat_order
-                 if sid in self.cats and self.cats[sid].cwd]
+                 if sid in self.cats and self.cats[sid].cwd and not self.cats[sid].dead
+                 and registry_is_wrapped(sid)]
+        unmonitored = [(sid, self.cats[sid]) for sid in self.cat_order
+                       if sid in self.cats and self.cats[sid].cwd and not self.cats[sid].dead
+                       and not registry_is_wrapped(sid)]
 
-        # Burn rate status bar
-        if valid:
-            out += self._render_status_bar(valid, now)
+        # Burn rate status bar (includes all sessions for total)
+        all_active = valid + unmonitored
+        if all_active:
+            out += self._render_status_bar(all_active, now)
 
-        if not valid:
+        if not valid and not unmonitored:
             out += CLRL + "\n"
             out += DIM + "  no active sessions" + RST + CLRL + "\n"
             out += DIM + "  start claude code to wake a cat" + RST + CLRL + "\n"
@@ -1826,6 +1885,19 @@ class Litter:
                 if dur:
                     parts.append(dur)
                 out += "  " + fg + tomb["name"] + RST + "  " + DIM + "  ".join(parts) + RST + CLRL + "\n"
+
+        # Unmonitored section — unwrapped sessions (text-only, no sprites)
+        if unmonitored:
+            try:
+                term_w = os.get_terminal_size().columns
+            except OSError:
+                term_w = 80
+            pad = max(0, term_w - 18)
+            out += DIM + "\u2500\u2500 unmonitored " + "\u2500" * pad + RST + CLRL + "\n"
+            for sid, cat in unmonitored:
+                cwd_short = os.path.basename((cat.project_dir or cat.cwd or "").rstrip("/"))
+                ago = self._format_ago(now - cat.last_event)
+                out += "  " + DIM + (cat.name or sid[:16]) + "  " + cwd_short + "  " + ago + RST + CLRL + "\n"
 
         out += CLRB
         sys.stdout.write(out)
@@ -2133,6 +2205,28 @@ def _session_selector(stdin_fd):
         termios.tcsetattr(stdin_fd, termios.TCSADRAIN, old_term)
 
 
+def _write_wrapper_state(session_id, wrapper_state, **extra):
+    """Write a WrapperState event to the session's state file."""
+    try:
+        state_path = state_file_for(session_id)
+        os.makedirs(STATE_DIR, exist_ok=True)
+        event = {
+            "event": "WrapperState",
+            "wrapper_state": wrapper_state,
+            "source": "wrapper",
+            "tool": "",
+            "ts": int(time.time() * 1000),
+            "session_id": session_id,
+            "cwd": "",
+            "transcript_path": "",
+        }
+        event.update(extra)
+        with open(state_path, "w") as sf:
+            json.dump(event, sf)
+    except OSError:
+        pass
+
+
 def code_mode(child_args):
     """PTY wrapper for Claude Code. Transparent passthrough with stdin control."""
     import fcntl
@@ -2248,9 +2342,17 @@ def code_mode(child_args):
     # Set our terminal to raw mode
     tty.setraw(stdin_fd)
 
-    # Interrupt detection state
-    _last_escape_ts = 0.0  # when user last pressed Escape
-    _output_buf = b""  # rolling buffer of recent stdout for pattern matching
+    # Stdout parsing state
+    _last_escape_ts = 0.0       # when user last pressed Escape
+    _output_buf = b""           # rolling buffer for interrupt detection
+    _last_spinner_ts = 0.0      # last time a spinner char was seen in stdout
+    _spinner_active = False     # currently seeing spinners
+    _pending_idle = False       # waiting to confirm idle after spinner stop
+    _pending_idle_ts = 0.0      # when pending idle started
+    _current_state = "idle"     # wrapper's authoritative state
+    _last_state_write_ts = 0.0  # debounce state file writes (200ms)
+    _decoded_buf = ""           # rolling decoded text buffer for pattern matching
+    _thought_seconds = 0        # parsed from "Thought for Ns" in stdout
 
     try:
         while True:
@@ -2279,30 +2381,88 @@ def code_mode(child_args):
                     if not data:
                         break
                     os.write(sys.stdout.fileno(), data)
-                    # Detect interrupt: check rolling buffer for "Interrupted" after recent Escape
-                    if wrap_session_id and _last_escape_ts and time.time() - _last_escape_ts < 3.0:
-                        _output_buf = (_output_buf + data)[-4096:]
-                        if b"Interrupted" in _output_buf:
-                            _last_escape_ts = 0.0
+
+                    if wrap_session_id:
+                        now = time.time()
+
+                        # Interrupt detection (Escape + "Interrupted" in stdout)
+                        if _last_escape_ts and now - _last_escape_ts < 3.0:
+                            _output_buf = (_output_buf + data)[-4096:]
+                            if b"Interrupted" in _output_buf:
+                                _last_escape_ts = 0.0
+                                _output_buf = b""
+                                _spinner_active = False
+                                _pending_idle = False
+                                _current_state = "idle"
+                                _write_wrapper_state(wrap_session_id, "interrupted")
+                        else:
                             _output_buf = b""
-                            try:
-                                state_path = state_file_for(wrap_session_id)
-                                os.makedirs(STATE_DIR, exist_ok=True)
-                                with open(state_path, "w") as sf:
-                                    json.dump({
-                                        "event": "Interrupted",
-                                        "tool": "",
-                                        "ts": int(time.time() * 1000),
-                                        "session_id": wrap_session_id,
-                                        "cwd": "",
-                                        "transcript_path": "",
-                                    }, sf)
-                            except OSError:
-                                pass
-                    else:
-                        _output_buf = b""
+
+                        # Decode and strip ANSI for pattern matching
+                        # Only parse small chunks (large = tool output, not spinners)
+                        chunk_text = data.decode("utf-8", errors="ignore")
+                        _decoded_buf = (_decoded_buf + chunk_text)[-4096:]
+
+                        if len(data) < 512:
+                            clean = _ANSI_RE.sub("", chunk_text)
+
+                            # Spinner detection -> thinking
+                            if SPINNER_CHARS & set(clean):
+                                _last_spinner_ts = now
+                                _pending_idle = False
+                                if not _spinner_active or _current_state != "thinking":
+                                    _spinner_active = True
+                                    _current_state = "thinking"
+                                    if now - _last_state_write_ts > 0.2:
+                                        _write_wrapper_state(wrap_session_id, "thinking")
+                                        _last_state_write_ts = now
+
+                        # Error detection
+                        for pat in _ERROR_PATTERNS:
+                            if pat in data:
+                                _current_state = "error"
+                                _write_wrapper_state(wrap_session_id, "error",
+                                                     error_type=pat.decode("utf-8", errors="ignore").lower().replace(" ", "_"))
+                                _last_state_write_ts = now
+                                break
+
+                        # Compaction detection
+                        if b"ompact" in data.lower():
+                            if _current_state != "compacting":
+                                _current_state = "compacting"
+                                _write_wrapper_state(wrap_session_id, "compacting")
+                                _last_state_write_ts = now
+
+                        # "Thought for Ns" detection
+                        import re as _re_thought
+                        m = _re_thought.search(r"Thought for (\d+)s", _decoded_buf[-200:])
+                        if m:
+                            _thought_seconds = int(m.group(1))
+                            _decoded_buf = ""  # consumed
+
                 except OSError:
                     break
+
+            # Spinner stop -> pending idle -> confirmed idle (2s silence)
+            if wrap_session_id and _spinner_active:
+                now_poll = time.time()
+                if _last_spinner_ts and now_poll - _last_spinner_ts > 2.0:
+                    _spinner_active = False
+                    if not _pending_idle:
+                        _pending_idle = True
+                        _pending_idle_ts = now_poll
+            if wrap_session_id and _pending_idle:
+                now_poll = time.time()
+                if now_poll - _pending_idle_ts > 2.0:
+                    _pending_idle = False
+                    if _current_state != "idle":
+                        _current_state = "idle"
+                        extra = {}
+                        if _thought_seconds:
+                            extra["thought_seconds"] = _thought_seconds
+                            _thought_seconds = 0
+                        _write_wrapper_state(wrap_session_id, "idle", **extra)
+                        _last_state_write_ts = now_poll
 
             # Detect session_id from new state files
             if not wrap_session_id:
@@ -2330,6 +2490,9 @@ def code_mode(child_args):
                         os.remove(resp_path)
                         if response in ("1", "2", "3"):
                             os.write(master_fd, response.encode())
+                        elif response:
+                            # Arbitrary text input — send with Enter
+                            os.write(master_fd, (response + "\r").encode())
                 except OSError:
                     pass
 
