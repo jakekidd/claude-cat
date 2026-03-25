@@ -1499,10 +1499,15 @@ class Litter:
                     continue
                 # Extract new text (delta from last read)
                 old_len = len(cat.last_out_content)
-                if content.startswith(cat.last_out_content[:min(old_len, 256)]):
+                if old_len and content.startswith(cat.last_out_content[:min(old_len, 256)]):
                     new_text = content[old_len:]
+                elif not cat.last_out_content:
+                    # First read — only look at last 500 chars (recent output)
+                    new_text = content[-500:] if len(content) > 500 else content
                 else:
-                    new_text = content  # buffer wrapped around
+                    # Buffer wrapped — skip this tick (can't compute reliable delta)
+                    cat.last_out_content = content
+                    continue
                 cat.last_out_content = content
 
                 # Spinner detection
@@ -1521,20 +1526,6 @@ class Litter:
                             _log("[stdout] %s -> thinking (spinner)", cat.session_id[:8])
                             _trace(cat.session_id, "stdout", "spinner_start", old_s, "thinking")
 
-                # Interrupt detection from stdout (catches Ctrl-C interrupts the wrapper missed)
-                if "Interrupted" in new_text and cat.state != "idle":
-                    old_s = cat.state
-                    cat.state = "idle"
-                    cat.sleeping = False
-                    cat.spinner_active = False
-                    cat.pending_idle = False
-                    cat.reaction = "interrupted"
-                    cat.reaction_end = now + 10.0
-                    cat.reaction_msg = "interrupted"
-                    dirty = True
-                    _log("[stdout] %s -> idle (Interrupted in output)", cat.session_id[:8])
-                    _trace(cat.session_id, "stdout", "Interrupted", old_s, "idle")
-
                 # Error detection
                 for pat_s in ("API Error", "Rate limit", "Request too large", "Overloaded"):
                     if pat_s in new_text:
@@ -1545,6 +1536,19 @@ class Litter:
                         dirty = True
                         _log("[stdout] %s error: %s", cat.session_id[:8], pat_s)
                         break
+
+                # Compaction detection — match spinner char + "Compacting" (Claude Code's format)
+                # Avoids false positives from tool output mentioning the word casually
+                import re as _re_compact
+                if _re_compact.search(r"[·✻✽✶✳✢]\s*Compacting", new_text):
+                    if cat.state != "compacting":
+                        old_s = cat.state
+                        cat.state = "compacting"
+                        cat.frame_idx = 0
+                        cat.last_wrapper_ts = now
+                        dirty = True
+                        _log("[stdout] %s -> compacting (spinner+Compacting)", cat.session_id[:8])
+                        _trace(cat.session_id, "stdout", "spinner+Compacting", old_s, "compacting")
 
                 # "Thought for Ns" detection
                 import re as _re_thought
