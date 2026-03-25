@@ -16,10 +16,12 @@ import sprites as sprites_mod
 
 VERSION = "0.3.0"
 DEBUG = False
+TRACE = False  # Dense state machine trace logging (--trace flag)
 
 # Logging: always-on per-cat + combined litter log in ~/.claude-cat/logs/
 LOG_DIR = os.path.join(Path.home(), ".claude-cat", "logs")
 _litter_log = None
+_trace_log = None  # trace.jsonl — one JSON object per state change
 _cat_logs = {}  # session_id -> file handle
 _cat_last_log = {}  # session_id -> last log line (for UI)
 _log_t0 = 0.0
@@ -27,7 +29,7 @@ MAX_LITTER_LOG = 1_000_000  # rotate litter.log above 1MB
 
 
 def _init_logging():
-    global _litter_log, _log_t0
+    global _litter_log, _trace_log, _log_t0
     os.makedirs(LOG_DIR, exist_ok=True)
     litter_path = os.path.join(LOG_DIR, "litter.log")
     # Rotate if too large
@@ -41,6 +43,39 @@ def _init_logging():
         pass
     _litter_log = open(litter_path, "a")
     _log_t0 = time.time()
+    # Trace log (--trace): one JSON per line, machine-parseable state changes
+    if TRACE:
+        trace_path = os.path.join(LOG_DIR, "trace.jsonl")
+        try:
+            if os.path.exists(trace_path) and os.path.getsize(trace_path) > MAX_LITTER_LOG * 2:
+                prev = trace_path + ".prev"
+                if os.path.exists(prev):
+                    os.remove(prev)
+                os.rename(trace_path, prev)
+        except OSError:
+            pass
+        _trace_log = open(trace_path, "a")
+
+
+def _trace(sid, trigger_type, trigger_detail, state_before, state_after, **extra):
+    """Write a trace entry. Only active when --trace is set."""
+    if not _trace_log:
+        return
+    try:
+        entry = {
+            "t": round(time.time(), 3),
+            "sid": sid[:8],
+            "trigger": trigger_type,
+            "detail": trigger_detail[:200],
+            "before": state_before,
+            "after": state_after,
+        }
+        if extra:
+            entry.update(extra)
+        _trace_log.write(json.dumps(entry) + "\n")
+        _trace_log.flush()
+    except Exception:
+        pass
 
 
 def _cat_log_handle(session_id):
@@ -1036,6 +1071,8 @@ class Cat:
 
         if self.state != old_state:
             _log("[%s] state: %s -> %s  (trigger: %s)", sid_short, old_state, self.state, ev)
+            _trace(self.session_id, "hook", "%s/%s" % (ev, tool), old_state, self.state,
+                   reaction=self.reaction_msg or "")
         if self.reaction and self.reaction_msg:
             _log("[%s] reaction: %s msg=%s", sid_short, self.reaction, self.reaction_msg)
 
@@ -1156,10 +1193,12 @@ class Cat:
         if not is_wrapped:
             # active/reading|cooking|browsing + 15s quiet => active/thinking
             if self.state in ("reading", "cooking", "browsing") and not self.reaction and quiet > 15:
+                old_s = self.state
                 _log("[%s] timeout: %s -> thinking (%.0fs quiet)", self.session_id[:8], self.state, quiet)
                 self.state = "thinking"
                 self.frame_idx = 0
                 dirty = True
+                _trace(self.session_id, "timeout", "15s_quiet", old_s, "thinking", quiet=round(quiet, 1))
 
             # active/thinking + 45s quiet => idle + interrupted reaction
             if self.state == "thinking" and not self.reaction and quiet > 45:
@@ -1170,12 +1209,14 @@ class Cat:
                 self.state = "idle"
                 self.sleeping = False
                 dirty = True
+                _trace(self.session_id, "timeout", "45s_quiet", "thinking", "idle", quiet=round(quiet, 1))
 
         # idle + 10min => sleeping (visual only, applies to all sessions)
         # Guard: don't sleep if we just set a reaction (e.g. interrupted)
         if self.state == "idle" and not self.sleeping and not self.reaction and quiet > 600:
             _log("[%s] timeout: idle -> sleeping (%.0fs quiet)", self.session_id[:8], quiet)
             self.sleeping = True
+            _trace(self.session_id, "timeout", "600s_quiet", "idle", "sleeping", quiet=round(quiet, 1))
             self.frame_idx = 0
             dirty = True
 
@@ -1470,6 +1511,7 @@ class Litter:
                     cat.pending_idle = False
                     if not cat.spinner_active:
                         cat.spinner_active = True
+                        old_s = cat.state
                         if cat.state != "thinking":
                             cat.state = "thinking"
                             cat.sleeping = False
@@ -1477,6 +1519,21 @@ class Litter:
                             cat.last_wrapper_ts = now
                             dirty = True
                             _log("[stdout] %s -> thinking (spinner)", cat.session_id[:8])
+                            _trace(cat.session_id, "stdout", "spinner_start", old_s, "thinking")
+
+                # Interrupt detection from stdout (catches Ctrl-C interrupts the wrapper missed)
+                if "Interrupted" in new_text and cat.state != "idle":
+                    old_s = cat.state
+                    cat.state = "idle"
+                    cat.sleeping = False
+                    cat.spinner_active = False
+                    cat.pending_idle = False
+                    cat.reaction = "interrupted"
+                    cat.reaction_end = now + 10.0
+                    cat.reaction_msg = "interrupted"
+                    dirty = True
+                    _log("[stdout] %s -> idle (Interrupted in output)", cat.session_id[:8])
+                    _trace(cat.session_id, "stdout", "Interrupted", old_s, "idle")
 
                 # Error detection
                 for pat_s in ("API Error", "Rate limit", "Request too large", "Overloaded"):
@@ -1488,15 +1545,6 @@ class Litter:
                         dirty = True
                         _log("[stdout] %s error: %s", cat.session_id[:8], pat_s)
                         break
-
-                # Compaction detection
-                if "ompact" in new_text.lower():
-                    if cat.state != "compacting":
-                        cat.state = "compacting"
-                        cat.frame_idx = 0
-                        cat.last_wrapper_ts = now
-                        dirty = True
-                        _log("[stdout] %s -> compacting", cat.session_id[:8])
 
                 # "Thought for Ns" detection
                 import re as _re_thought
@@ -1522,9 +1570,13 @@ class Litter:
                 cat.pending_idle = False
             if cat.pending_idle and now - cat.pending_idle_ts > 3.0:
                 cat.pending_idle = False
+                old_s = cat.state
                 if cat.state != "idle":
                     cat.state = "idle"
                     cat.last_wrapper_ts = now
+                    _trace(cat.session_id, "timeout", "spinner_stop+hook_quiet",
+                           old_s, "idle", spinner_silence=round(now - cat.last_spinner_ts, 1),
+                           hook_silence=round(now - cat.last_event, 1))
                     if cat.thought_seconds:
                         cat.reaction = "happy"
                         cat.reaction_end = now + 4.0
@@ -2657,8 +2709,8 @@ def code_mode(child_args):
                     if not data:
                         break
                     os.write(master_fd, data)
-                    # Track Escape key presses (0x1b standalone, not part of arrow/function keys)
-                    if b"\x1b" in data and len(data) == 1:
+                    # Track Escape (0x1b) and Ctrl-C (0x03) for interrupt detection
+                    if len(data) == 1 and (data == b"\x1b" or data == b"\x03"):
                         _last_escape_ts = time.time()
                 except OSError:
                     break
@@ -2999,12 +3051,13 @@ def print_help():
         "  claude-cat code my-feature        Resume 'my-feature' or create new\n"
         "  claude-cat code --resume <id>     Resume by session id\n"
         "  claude-cat --debug               Verbose logging (also prints to stderr)\n"
+        "  claude-cat --trace               Dense state machine trace (logs/trace.jsonl)\n"
         "  claude-cat --version             Show version" % VERSION
     )
 
 
 def main():
-    global DEBUG
+    global DEBUG, TRACE
     args = sys.argv[1:]
     sprite_name = None
     target_session = None
@@ -3019,6 +3072,9 @@ def main():
             i += 2
         elif args[i] == "--debug":
             DEBUG = True
+            i += 1
+        elif args[i] == "--trace":
+            TRACE = True
             i += 1
         else:
             filtered.append(args[i])
