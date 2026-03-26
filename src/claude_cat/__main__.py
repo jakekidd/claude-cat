@@ -1063,7 +1063,7 @@ class Cat:
         elif ev == "PostToolUseFailure":
             self.reaction = "error"
             self.reaction_end = time.time() + self.reactions.get("error", {}).get("hold", 4.0)
-            self.reaction_msg = "womp womp"
+            self.reaction_msg = "%s failed" % tool if tool else "tool failed"
         elif ev == "PostToolUse":
             new_state = TOOL_STATES.get(tool, "cooking")
             if new_state != self.state:
@@ -1807,10 +1807,7 @@ class Litter:
                 reset_str = reset_dt.strftime("%-I:%M%p").lower()
                 parts.append(DIM + "reset " + RST + CSI + "38;5;109m" + reset_str + RST)
 
-        try:
-            term_w = os.get_terminal_size().columns
-        except OSError:
-            term_w = 80
+        term_w = getattr(self, "_term_w", 80)
 
         bar = "  ".join(parts)
         return bar + CLRL + "\n"
@@ -1866,10 +1863,7 @@ class Litter:
 
     def _render_prompt_widget(self, now):
         """Render the interaction area. Always PROMPT_LINES tall (constant allocation)."""
-        try:
-            term_w = os.get_terminal_size().columns
-        except OSError:
-            term_w = 80
+        term_w = getattr(self, "_term_w", 80)
 
         total = self.PROMPT_LINES
 
@@ -2179,10 +2173,7 @@ class Litter:
         raw_msg = cat.last_message or ""
         msg = ""
         if raw_msg:
-            try:
-                term_w = os.get_terminal_size().columns
-            except OSError:
-                term_w = 80
+            term_w = getattr(self, "_term_w", 80)
             sprite_w = len(sprite[0]) if sprite else 14
             max_msg = max(5, term_w - sprite_w - 6)
             if len(raw_msg) > max_msg:
@@ -2229,10 +2220,7 @@ class Litter:
         if stats:
             labels.append(stats)
         # Separator
-        try:
-            sep_w = os.get_terminal_size().columns
-        except OSError:
-            sep_w = 80
+        sep_w = getattr(self, "_term_w", 80)
         sprite_w = len(sprite[0]) if sprite else 14
         sep_len = max(5, sep_w - sprite_w - 4)
         labels.append(DIM + "\u2501" * sep_len + RST)
@@ -2269,6 +2257,12 @@ class Litter:
             now = time.time()
         out = HOME + HIDE
 
+        # Cache terminal width for this frame
+        try:
+            self._term_w = os.get_terminal_size().columns
+        except OSError:
+            self._term_w = 80
+
         # Filter valid cats — split wrapped (full rendering) vs unwrapped (text-only)
         # Dead cats still render (show "rip" countdown) until moved to graveyard
         valid = [(sid, self.cats[sid]) for sid in self.cat_order
@@ -2293,10 +2287,7 @@ class Litter:
         if title_cat:
             tfg = CSI + "38;5;%dm" % title_cat.color
             title_name = (title_cat.name or title_cat.session_id[:16]).upper()
-            try:
-                term_w = os.get_terminal_size().columns
-            except OSError:
-                term_w = 80
+            term_w = self._term_w
             pad = max(0, term_w - len(title_name) - 4)
             out += tfg + BOLD + "  " + title_name + RST + tfg + DIM + " " + "\u2500" * pad + RST + CLRL + "\n"
 
@@ -2319,10 +2310,7 @@ class Litter:
                 proj_short = os.path.basename(proj_dir.rstrip("/"))
                 base_color = members[0][1].color or 208
                 fg = CSI + "38;5;%dm" % base_color
-                try:
-                    term_w = os.get_terminal_size().columns
-                except OSError:
-                    term_w = 80
+                term_w = self._term_w
                 header = " " + proj_short + " "
                 pad = max(0, term_w - len(header) - 2)
                 out += fg + DIM + "\u2500\u2500" + RST + fg + BOLD + header + RST + fg + DIM + "\u2500" * pad + RST + CLRL + "\n"
@@ -2334,10 +2322,7 @@ class Litter:
         alive_names = {cat.name for cat in self.cats.values()}
         visible_graves = [t for t in self.graveyard if t.get("name") not in alive_names]
         if visible_graves:
-            try:
-                term_w = os.get_terminal_size().columns
-            except OSError:
-                term_w = 80
+            term_w = self._term_w
             pad = max(0, term_w - 8)
             out += DIM + "\u2500\u2500 rip " + "\u2500" * pad + RST + CLRL + "\n"
             for tomb in visible_graves:
@@ -2362,10 +2347,7 @@ class Litter:
 
         # Unmonitored section — unwrapped sessions (text-only, no sprites)
         if unmonitored:
-            try:
-                term_w = os.get_terminal_size().columns
-            except OSError:
-                term_w = 80
+            term_w = self._term_w
             pad = max(0, term_w - 18)
             out += DIM + "\u2500\u2500 unmonitored " + "\u2500" * pad + RST + CLRL + "\n"
             for sid, cat in unmonitored:
