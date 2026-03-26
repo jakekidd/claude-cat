@@ -1025,11 +1025,12 @@ class Cat:
                 # Check auto-approve mode
                 mode = registry_get_approve_mode(self.session_id)
                 if mode == "automatic":
-                    # Auto-approve: write "2" (Always) to response file
+                    # Auto-approve: write "1" (Yes) — not "2" (Always) to avoid
+                    # permanently whitelisting permissions that accumulate while in auto
                     try:
                         resp_path = os.path.join(STATE_DIR, STATE_PREFIX + self.session_id + "-response")
                         with open(resp_path, "w") as f:
-                            f.write("2")
+                            f.write("1")
                     except OSError:
                         pass
                     _log("[%s] auto-approved (automatic mode) tool=%s", sid_short, tool)
