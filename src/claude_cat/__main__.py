@@ -5,9 +5,9 @@ import glob
 import json
 import os
 import random
+import re
 import signal
 import sys
-import tempfile
 import time
 from pathlib import Path
 
@@ -420,9 +420,20 @@ BLOCKS = " \u2597\u2596\u2584\u259d\u2590\u259e\u259f\u2598\u259a\u258c\u2599\u2
 
 # Stdout spinner chars emitted by Claude Code during thinking
 SPINNER_CHARS = set("\u00b7\u273b\u273d\u2736\u2733\u2722")  # ·✻✽✶✳✢
-# ANSI SGR stripper for stdout pattern matching
-import re as _re_ansi
-_ANSI_RE = _re_ansi.compile(r'\x1b\[[^m]*m')
+_ANSI_RE = re.compile(r'\x1b\[[^m]*m')
+
+# Adjacency map for idle gaze drift (used in Cat.tick)
+_NEIGHBORS = {
+    "center": ["up", "down", "left", "right"],
+    "up": ["center", "up-left", "up-right"],
+    "down": ["center", "down-left", "down-right"],
+    "left": ["center", "up-left", "down-left"],
+    "right": ["center", "up-right", "down-right"],
+    "up-left": ["up", "left", "center"],
+    "up-right": ["up", "right", "center"],
+    "down-left": ["down", "left", "center"],
+    "down-right": ["down", "right", "center"],
+}
 # Error patterns in Claude Code stdout
 _ERROR_PATTERNS = (b"API Error", b"Rate limit", b"Request too large", b"Overloaded")
 
@@ -764,8 +775,11 @@ class Cat:
                         if not text:
                             continue
                         text = text.rstrip()
-                        # Check for numbered options (1. ... 2. ... etc.)
-                        if "1." in text and "2." in text:
+                        # Check for numbered options at line starts (1. ... 2. ...)
+                        # Must have at least "1." and "2." at start of lines to avoid
+                        # false positives from prose like "Step 1. do X"
+                        if re.search(r"^\s*1\.", text, re.MULTILINE) and \
+                           re.search(r"^\s*2\.", text, re.MULTILINE):
                             return self._parse_question(text)
                         # Check for question ending with ?
                         if text.endswith("?"):
@@ -779,7 +793,6 @@ class Cat:
 
     def _parse_question(self, text):
         """Extract question text and numbered options from assistant message."""
-        import re
         lines = text.split("\n")
         question_lines = []
         options = []
@@ -946,16 +959,18 @@ class Cat:
         elif ev in wake_events:
             self.sleeping = False
 
-        # Clear permission on any non-PermissionRequest event
+        # Clear permission/question state on any non-PermissionRequest event
         if ev != "PermissionRequest":
             if self.permission_pending:
                 _log("[%s] cleared permission dot", sid_short)
             self.permission_pending = False
             self.permission_tool = ""
             self.permission_input = {}
+            self.pending_question = None
 
         if ev == "UserPromptSubmit":
             self.state = "thinking"
+            self.subagent_depth = 0  # reset on new turn
             self.frame_idx = 0
             self.next_frame = time.time() + 0.5
         elif ev == "Stop":
@@ -1063,38 +1078,7 @@ class Cat:
         elif ev == "WrapperState":
             ws = data.get("wrapper_state", "")
             self.last_wrapper_ts = time.time()
-            if ws == "thinking":
-                self.state = "thinking"
-                self.sleeping = False
-                self.frame_idx = 0
-            elif ws == "idle":
-                self.state = "idle"
-                thought_s = data.get("thought_seconds", 0)
-                if thought_s:
-                    self.reaction = "happy"
-                    self.reaction_end = time.time() + 4.0
-                    self.reaction_msg = "thought %ds" % thought_s
-                    self.overlay = "bulb"
-                    self.overlay_end = time.time() + 3.0
-                else:
-                    self.reaction = "happy"
-                    self.reaction_end = time.time() + 4.0
-                    self.reaction_msg = "done!"
-                    self.overlay = "bulb"
-                    self.overlay_end = time.time() + 3.0
-            elif ws == "compacting":
-                self.state = "compacting"
-                self.frame_idx = 0
-            elif ws == "asking":
-                self.state = "idle"
-                self.reaction = "surprised"
-                self.reaction_end = time.time() + 8.0
-                self.reaction_msg = "asking..."
-            elif ws == "error":
-                self.reaction = "error"
-                self.reaction_end = time.time() + 4.0
-                self.reaction_msg = data.get("error_type", "error")
-            elif ws == "interrupted":
+            if ws == "interrupted":
                 self.state = "idle"
                 self.sleeping = False
                 self.reaction = "interrupted"
@@ -1175,18 +1159,6 @@ class Cat:
                     self.gaze_hold -= 1
                     # Stay on current frame (hold the look)
                 else:
-                    # Adjacency map for natural eye drift
-                    _NEIGHBORS = {
-                        "center": ["up", "down", "left", "right"],
-                        "up": ["center", "up-left", "up-right"],
-                        "down": ["center", "down-left", "down-right"],
-                        "left": ["center", "up-left", "down-left"],
-                        "right": ["center", "up-right", "down-right"],
-                        "up-left": ["up", "left", "center"],
-                        "up-right": ["up", "right", "center"],
-                        "down-left": ["down", "left", "center"],
-                        "down-right": ["down", "right", "center"],
-                    }
                     cur_label = labels[self.frame_idx] if self.frame_idx < len(labels) else ""
                     neighbors = _NEIGHBORS.get(cur_label)
                     if labels and neighbors and random.random() < 0.65:
@@ -1542,7 +1514,10 @@ class Litter:
                 if old_len and content.startswith(cat.last_out_content[:min(old_len, 256)]):
                     new_text = content[old_len:]
                 elif not cat.last_out_content:
-                    # First read — only look at last 500 chars (recent output)
+                    # First read — skip if file is stale (>30s), else use last 500 chars
+                    if now - mtime > 30:
+                        cat.last_out_content = content
+                        continue
                     new_text = content[-500:] if len(content) > 500 else content
                 else:
                     # Buffer wrapped — skip this tick (can't compute reliable delta)
@@ -1578,9 +1553,7 @@ class Litter:
                         break
 
                 # Compaction detection — match spinner char + "Compacting" (Claude Code's format)
-                # Avoids false positives from tool output mentioning the word casually
-                import re as _re_compact
-                if _re_compact.search(r"[·✻✽✶✳✢]\s*Compacting", new_text):
+                if re.search(r"[·✻✽✶✳✢]\s*Compacting", new_text):
                     if cat.state != "compacting":
                         old_s = cat.state
                         cat.state = "compacting"
@@ -1591,8 +1564,7 @@ class Litter:
                         _trace(cat.session_id, "stdout", "spinner+Compacting", old_s, "compacting")
 
                 # "Thought for Ns" detection
-                import re as _re_thought
-                m = _re_thought.search(r"Thought for (\d+)s", content[-200:])
+                m = re.search(r"Thought for (\d+)s", content[-200:])
                 if m:
                     cat.thought_seconds = int(m.group(1))
 
@@ -3118,45 +3090,6 @@ def litter_mode(sprite_data=None):
             os.remove(lock_path)
         except OSError:
             pass
-
-
-def target_mode(session_id, sprite_data=None):
-    _init_logging()
-    _register_cat_log(session_id)
-    _log("claude-cat v%s target started sid=%s", VERSION, session_id[:8])
-    sys.stdout.write(CLR)
-    sys.stdout.flush()
-    cat = Cat(sprite_data, session_id=session_id)
-    if not os.path.exists(cat.state_file):
-        with open(cat.state_file, "w") as f:
-            f.write("{}")
-    cat.render()
-    def cleanup(*_):
-        sys.stdout.write(SHOW + "\n")
-        sys.stdout.flush()
-        sys.exit(0)
-    signal.signal(signal.SIGINT, cleanup)
-    signal.signal(signal.SIGTERM, cleanup)
-    while True:
-        now = time.time()
-        dirty = False
-        try:
-            mtime = os.path.getmtime(cat.state_file)
-            if mtime > cat.last_mtime:
-                cat.last_mtime = mtime
-                with open(cat.state_file) as f:
-                    raw = f.read()
-                if raw != cat.last_raw:
-                    cat.last_raw = raw
-                    cat.handle_event(json.loads(raw))
-                    dirty = True
-        except (OSError, json.JSONDecodeError):
-            pass
-        if cat.tick(now):
-            dirty = True
-        if dirty:
-            cat.render()
-        time.sleep(0.1)
 
 
 def demo_mode(sprite_data=None):
