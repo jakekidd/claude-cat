@@ -1994,7 +1994,7 @@ class Litter:
         for _ in range(total - used):
             out += CLRL + "\n"
         # Options
-        out += "  " + CSI + "32m" + BOLD + "> [enter]=Always" + RST + "  [Y]es  [N]o" + CLRL + "\n"
+        out += "  " + DIM + "[1] Yes  " + CSI + "32m" + BOLD + "[2/enter] Always" + RST + DIM + "  [3] No" + RST + CLRL + "\n"
         out += CLRL + "\n"
         return out
 
@@ -2134,14 +2134,14 @@ class Litter:
             elif key in ("\r", "\n"):
                 response = "1"  # Enter = first option
         else:
-            # Permission: Enter=Always, Y=Yes, A=Always, N=No
+            # Permission: 1=Yes, 2=Always, 3=No, Enter=Always
             if key in ("\r", "\n"):
                 response = "2"  # Enter = Always
-            elif key in ("y", "Y", "1"):
+            elif key == "1":
                 response = "1"  # Yes
-            elif key in ("a", "A", "2"):
+            elif key == "2":
                 response = "2"  # Always
-            elif key in ("n", "N", "3"):
+            elif key == "3":
                 response = "3"  # No
         if response:
             resp_path = os.path.join(STATE_DIR, STATE_PREFIX + sid + "-response")
@@ -2430,7 +2430,7 @@ class Litter:
 
         # Controls footer
         if not self.prompt_queue and not self.input_mode:
-            out += DIM + "  tab=select  m/g/a=mode  enter=input  q=quit" + RST + CLRL + "\n"
+            out += DIM + "  tab=select  \\=mode  C=color  enter=input  1-9=respond  Q=quit" + RST + CLRL + "\n"
 
         out += CLRB
         sys.stdout.write(out)
@@ -3108,35 +3108,34 @@ def litter_mode(sprite_data=None):
                             litter.input_buffer = litter.input_buffer[:-1]
                         elif len(ch) == 1 and ch >= " ":
                             litter.input_buffer += ch
-                    elif litter.prompt_queue and ch in ("y", "Y", "n", "N", "a", "A",
-                                                        "1", "2", "3", "4", "5", "6", "7", "8", "9",
-                                                        "\r", "\n"):
-                        # Prompt response (permission or question)
+                    elif litter.prompt_queue and ch in ("1", "2", "3", "4", "5",
+                                                        "6", "7", "8", "9", "\r", "\n"):
+                        # Prompt response: numbers only (1=Yes/2=Always/3=No for perms)
                         litter.handle_prompt_response(ch)
                     elif ch == "\x1b[A" or ch == "\x1b[Z":  # up arrow or shift-tab
                         litter.cycle_cat(-1)
                     elif ch == "\x1b[B" or ch == "\t":  # down arrow or tab
                         litter.cycle_cat(1)
                     elif ch in ("\r", "\n"):
-                        # Enter on selected cat: open input mode
                         litter.start_input()
-                    elif ch in ("m", "M"):
-                        litter.toggle_approve_mode("manual")
-                    elif ch in ("g", "G"):
-                        litter.toggle_approve_mode("guarded")
-                    elif ch in ("a", "A"):
-                        litter.toggle_approve_mode("automatic")
-                    elif ch in ("c", "C"):
-                        # Spread colors: shuffle palette, assign evenly
-                        cats = [c for c in litter.cats.values() if not c.dead]
-                        if cats:
-                            shuffled = list(PALETTE)
-                            random.shuffle(shuffled)
-                            for i, cat in enumerate(cats):
-                                cat.color = shuffled[i % len(shuffled)]
-                                registry_set_color(cat.session_id, cat.color)
+                    elif ch == "\\":
+                        # Cycle approve mode: manual -> guarded -> automatic -> manual
+                        sid = litter.get_selected_sid()
+                        if sid:
+                            cur = registry_get_approve_mode(sid)
+                            nxt = {"manual": "guarded", "guarded": "automatic",
+                                   "automatic": "manual"}.get(cur, "manual")
+                            litter.toggle_approve_mode(nxt)
+                    elif ch == "C":  # Shift+C: change selected cat color
+                        sid = litter.get_selected_sid()
+                        cat = litter.cats.get(sid) if sid else None
+                        if cat:
+                            cat.color = random.choice(PALETTE)
+                            registry_set_color(cat.session_id, cat.color)
                             registry_flush_force()
-                    elif ch in ("q", "Q", "\x03"):
+                    elif ch == "Q":  # Shift+Q: quit
+                        break
+                    elif ch == "\x03":  # Ctrl+C also quits
                         break
                 except OSError:
                     pass
