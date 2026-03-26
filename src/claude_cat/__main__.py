@@ -1881,18 +1881,16 @@ class Litter:
         result.extend(lines[-bot_n:] if bot_n > 0 else [])
         return result
 
-    PROMPT_RESERVED_LINES = 1  # minimal spacer when no prompt active
-    PROMPT_EXPANDED_LINES = 25  # expanded when prompt/question active
+    PROMPT_LINES = 20  # constant allocation for prompt area (never shifts)
 
     def _render_prompt_widget(self, now):
-        """Render the interaction area. Expands when a prompt is active, compact when idle."""
+        """Render the interaction area. Always PROMPT_LINES tall (constant allocation)."""
         try:
             term_w = os.get_terminal_size().columns
         except OSError:
             term_w = 80
 
-        has_prompt = bool(self.prompt_queue) or self.input_mode
-        total = self.PROMPT_EXPANDED_LINES if has_prompt else self.PROMPT_RESERVED_LINES
+        total = self.PROMPT_LINES
 
         if self.input_mode:
             return self._render_input_widget(term_w, total)
@@ -2303,7 +2301,24 @@ class Litter:
         if all_active:
             out += self._render_status_bar(all_active, now)
 
-        # Prompt widget at top (always visible, expands when active)
+        # Title bar: shows active prompt cat or selected cat
+        title_cat = None
+        if self.prompt_queue:
+            title_cat = self.cats.get(self.prompt_queue[0]["session_id"])
+        if not title_cat:
+            sel_sid = self.get_selected_sid()
+            title_cat = self.cats.get(sel_sid) if sel_sid else None
+        if title_cat:
+            tfg = CSI + "38;5;%dm" % title_cat.color
+            title_name = (title_cat.name or title_cat.session_id[:16]).upper()
+            try:
+                term_w = os.get_terminal_size().columns
+            except OSError:
+                term_w = 80
+            pad = max(0, term_w - len(title_name) - 4)
+            out += tfg + BOLD + "  " + title_name + RST + tfg + DIM + " " + "\u2500" * pad + RST + CLRL + "\n"
+
+        # Prompt widget (constant height, always visible)
         out += self._render_prompt_widget(now)
 
         if not valid and not unmonitored:
