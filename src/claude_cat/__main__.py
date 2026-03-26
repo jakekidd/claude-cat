@@ -422,6 +422,22 @@ BLOCKS = " \u2597\u2596\u2584\u259d\u2590\u259e\u259f\u2598\u259a\u258c\u2599\u2
 SPINNER_CHARS = set("\u00b7\u273b\u273d\u2736\u2733\u2722")  # ·✻✽✶✳✢
 _ANSI_RE = re.compile(r'\x1b\[[^m]*m')
 
+# Declarative stdout pattern table: (event_suffix, char_set_or_None, match_spec)
+# char_set: test if any chars in set appear in new_text (spinner detection)
+# match_spec list: [(substring, key), ...] — first substring match wins (errors)
+# match_spec regex: compiled regex to search new_text (compaction)
+STDOUT_PATTERNS = [
+    ("spinner", SPINNER_CHARS, None),
+    ("error", None, [
+        ("API Error", "api_error"),
+        ("Rate limit", "rate_limit"),
+        ("Request too large", "request_too_large"),
+        ("Overloaded", "overloaded"),
+    ]),
+    ("compacting", None, re.compile(r"[·✻✽✶✳✢]\s*Compacting")),
+]
+_THOUGHT_RE = re.compile(r"Thought for (\d+)s")
+
 # Adjacency map for idle gaze drift (used in Cat.tick)
 _NEIGHBORS = {
     "center": ["up", "down", "left", "right"],
@@ -1473,12 +1489,27 @@ class Litter:
                 del self.cats[sid]
                 self.cat_order.remove(sid)
 
+    # ── Unified tick pipeline: gather → match → apply → sync ──
+
     def tick(self):
         now = time.time()
-        dirty = False
-        for cat in self.cats.values():
+        gathered = self._gather(now)
+        events = self._match(gathered, now)
+        dirty = self._apply(events, now)
+        self._sync(now)
+        return dirty
+
+    def _gather(self, now):
+        """Phase 1: Read all data sources once per tick. No display mutations."""
+        result = {}
+        for sid, cat in self.cats.items():
             if cat.dead:
+                result[sid] = {"is_wrapped": False, "hook_data": None,
+                               "new_text": None, "out_content": None}
                 continue
+            is_wrapped = registry_is_wrapped(cat.session_id) if cat.session_id else False
+            # State file poll (hook events)
+            hook_data = None
             try:
                 mtime = os.path.getmtime(cat.state_file)
                 if mtime > cat.last_mtime:
@@ -1487,110 +1518,142 @@ class Litter:
                         raw = f.read()
                     if raw != cat.last_raw:
                         cat.last_raw = raw
-                        data = json.loads(raw)
-                        cat.cwd = data.get("cwd") or cat.cwd
-                        _log("[tick] state file changed for %s, processing event", cat.session_id[:8])
-                        cat._process_event(data)
-                        dirty = True
+                        hook_data = json.loads(raw)
             except (OSError, json.JSONDecodeError):
                 pass
-            if cat.tick(now):
-                dirty = True
-        # ── Stdout tee parsing (wrapped sessions only) ──
-        for cat in self.cats.values():
-            if cat.dead or not cat.out_file or not registry_is_wrapped(cat.session_id):
-                continue
-            try:
-                mtime = os.path.getmtime(cat.out_file)
-                if mtime <= cat.last_out_mtime:
-                    continue
-                cat.last_out_mtime = mtime
-                with open(cat.out_file) as f:
-                    content = f.read()
-                if content == cat.last_out_content:
-                    continue
-                # Extract new text (delta from last read)
-                old_len = len(cat.last_out_content)
-                if old_len and content.startswith(cat.last_out_content[:min(old_len, 256)]):
-                    new_text = content[old_len:]
-                elif not cat.last_out_content:
-                    # First read — skip if file is stale (>30s), else use last 500 chars
-                    if now - mtime > 30:
-                        cat.last_out_content = content
-                        continue
-                    new_text = content[-500:] if len(content) > 500 else content
-                else:
-                    # Buffer wrapped — skip this tick (can't compute reliable delta)
-                    cat.last_out_content = content
-                    continue
-                cat.last_out_content = content
-
-                # Spinner detection
-                if SPINNER_CHARS & set(new_text):
-                    cat.last_spinner_ts = now
+            # Stdout tee file (wrapped only)
+            new_text = None
+            out_content = None
+            if is_wrapped and cat.out_file:
+                try:
+                    mtime = os.path.getmtime(cat.out_file)
+                    if mtime > cat.last_out_mtime:
+                        cat.last_out_mtime = mtime
+                        with open(cat.out_file) as f:
+                            content = f.read()
+                        if content != cat.last_out_content:
+                            old_len = len(cat.last_out_content)
+                            if old_len and content.startswith(cat.last_out_content[:min(old_len, 256)]):
+                                new_text = content[old_len:]
+                            elif not cat.last_out_content:
+                                if now - mtime > 30:
+                                    cat.last_out_content = content
+                                else:
+                                    new_text = content[-500:] if len(content) > 500 else content
+                            else:
+                                cat.last_out_content = content  # buffer wrapped, skip
+                            if new_text is not None:
+                                cat.last_out_content = content
+                                out_content = content
+                except (OSError, ValueError):
+                    pass
+            # Advance spinner tracking cursors (tracking, not display state)
+            if is_wrapped:
+                if cat.spinner_active and cat.last_spinner_ts and now - cat.last_spinner_ts > 3.0:
+                    cat.spinner_active = False
+                    if not cat.pending_idle:
+                        cat.pending_idle = True
+                        cat.pending_idle_ts = now
+                if cat.pending_idle and now - cat.last_event < 5.0:
                     cat.pending_idle = False
-                    if not cat.spinner_active:
-                        cat.spinner_active = True
-                        old_s = cat.state
-                        if cat.state != "thinking":
-                            cat.state = "thinking"
-                            cat.sleeping = False
-                            cat.frame_idx = 0
-                            cat.last_wrapper_ts = now
-                            dirty = True
-                            _log("[stdout] %s -> thinking (spinner)", cat.session_id[:8])
-                            _trace(cat.session_id, "stdout", "spinner_start", old_s, "thinking")
+            result[sid] = {"is_wrapped": is_wrapped, "hook_data": hook_data,
+                           "new_text": new_text, "out_content": out_content}
+        return result
 
-                # Error detection — brief grumpy face, no state change
-                for pat_s in ("API Error", "Rate limit", "Request too large", "Overloaded"):
-                    if pat_s in new_text:
-                        cat.reaction = "error"
-                        cat.reaction_end = now + 2.0
-                        cat.reaction_msg = pat_s.lower().replace(" ", "_")
-                        dirty = True
-                        _log("[stdout] %s error: %s", cat.session_id[:8], pat_s)
-                        break
+    def _match(self, gathered, now):
+        """Phase 2: Pattern matching on gathered data. No mutations. No I/O."""
+        events = []
+        for sid, g in gathered.items():
+            cat = self.cats[sid]
+            if cat.dead:
+                continue
+            # Hook events from state file
+            if g["hook_data"] is not None:
+                events.append(("hook", sid, g["hook_data"]))
+            # Stdout patterns (wrapped only)
+            new_text = g["new_text"]
+            if new_text is not None and g["is_wrapped"]:
+                for pat_type, char_set, match_spec in STDOUT_PATTERNS:
+                    if char_set is not None:
+                        if char_set & set(new_text):
+                            events.append(("stdout_" + pat_type, sid, None))
+                    elif isinstance(match_spec, list):
+                        for pat_str, key in match_spec:
+                            if pat_str in new_text:
+                                events.append(("stdout_" + pat_type, sid, key))
+                                break
+                    elif hasattr(match_spec, "search"):
+                        if match_spec.search(new_text):
+                            events.append(("stdout_" + pat_type, sid, None))
+                # Thought detection (tail of full content)
+                if g["out_content"]:
+                    m = _THOUGHT_RE.search(g["out_content"][-200:])
+                    if m:
+                        events.append(("stdout_thought", sid, int(m.group(1))))
+            # Timeout: spinner→idle (pending_idle already advanced in _gather)
+            if g["is_wrapped"] and cat.pending_idle and now - cat.pending_idle_ts > 3.0:
+                events.append(("timeout_spinner_idle", sid, None))
+        return events
 
-                # Compaction detection — match spinner char + "Compacting" (Claude Code's format)
-                if re.search(r"[·✻✽✶✳✢]\s*Compacting", new_text):
-                    if cat.state != "compacting":
-                        old_s = cat.state
-                        cat.state = "compacting"
+    def _apply(self, events, now):
+        """Phase 3: Process events sequentially. All display mutations here."""
+        dirty = False
+        hook_sids = set()
+        for etype, sid, detail in events:
+            cat = self.cats.get(sid)
+            if not cat or cat.dead:
+                continue
+            if etype == "hook":
+                hook_sids.add(sid)
+                cat.cwd = detail.get("cwd") or cat.cwd
+                _log("[tick] processing event for %s", sid[:8])
+                cat._process_event(detail)
+                dirty = True
+            elif etype == "stdout_spinner":
+                if sid in hook_sids:
+                    continue
+                cat.last_spinner_ts = now
+                cat.pending_idle = False
+                if not cat.spinner_active:
+                    cat.spinner_active = True
+                    old_s = cat.state
+                    if cat.state != "thinking":
+                        cat.state = "thinking"
+                        cat.sleeping = False
                         cat.frame_idx = 0
                         cat.last_wrapper_ts = now
                         dirty = True
-                        _log("[stdout] %s -> compacting (spinner+Compacting)", cat.session_id[:8])
-                        _trace(cat.session_id, "stdout", "spinner+Compacting", old_s, "compacting")
-
-                # "Thought for Ns" detection
-                m = re.search(r"Thought for (\d+)s", content[-200:])
-                if m:
-                    cat.thought_seconds = int(m.group(1))
-
-            except (OSError, ValueError):
-                pass
-
-        # Spinner stop -> idle (requires BOTH: no spinners for 3s AND no hook events for 5s)
-        # This prevents spurious idle transitions between tool calls where hooks keep firing
-        for cat in self.cats.values():
-            if cat.dead or not registry_is_wrapped(cat.session_id):
-                continue
-            if cat.spinner_active and cat.last_spinner_ts and now - cat.last_spinner_ts > 3.0:
-                cat.spinner_active = False
-                if not cat.pending_idle:
-                    cat.pending_idle = True
-                    cat.pending_idle_ts = now
-            # Cancel pending idle if a hook event arrived recently (tool use in progress)
-            if cat.pending_idle and now - cat.last_event < 5.0:
-                cat.pending_idle = False
-            if cat.pending_idle and now - cat.pending_idle_ts > 3.0:
+                        _log("[stdout] %s -> thinking (spinner)", sid[:8])
+                        _trace(sid, "stdout", "spinner_start", old_s, "thinking")
+            elif etype == "stdout_error":
+                cat.reaction = "error"
+                cat.reaction_end = now + 2.0
+                cat.reaction_msg = detail
+                dirty = True
+                _log("[stdout] %s error: %s", sid[:8], detail)
+            elif etype == "stdout_compacting":
+                if sid in hook_sids:
+                    continue
+                if cat.state != "compacting":
+                    old_s = cat.state
+                    cat.state = "compacting"
+                    cat.frame_idx = 0
+                    cat.last_wrapper_ts = now
+                    dirty = True
+                    _log("[stdout] %s -> compacting", sid[:8])
+                    _trace(sid, "stdout", "compacting", old_s, "compacting")
+            elif etype == "stdout_thought":
+                cat.thought_seconds = detail
+            elif etype == "timeout_spinner_idle":
+                if sid in hook_sids:
+                    continue
                 cat.pending_idle = False
                 old_s = cat.state
                 if cat.state != "idle":
                     cat.state = "idle"
                     cat.last_wrapper_ts = now
-                    _trace(cat.session_id, "timeout", "spinner_stop+hook_quiet",
-                           old_s, "idle", spinner_silence=round(now - cat.last_spinner_ts, 1),
+                    _trace(sid, "timeout", "spinner_stop+hook_quiet", old_s, "idle",
+                           spinner_silence=round(now - cat.last_spinner_ts, 1),
                            hook_silence=round(now - cat.last_event, 1))
                     if cat.thought_seconds:
                         cat.reaction = "happy"
@@ -1604,13 +1667,18 @@ class Litter:
                     cat.overlay = "bulb"
                     cat.overlay_end = now + 3.0
                     dirty = True
-                    _log("[stdout] %s -> idle", cat.session_id[:8])
+                    _log("[stdout] %s -> idle", sid[:8])
+        # Run animation timers, timeouts, transcript refresh for all cats
+        for cat in self.cats.values():
+            if not cat.dead and cat.tick(now):
+                dirty = True
+        return dirty
 
-        # Sync cat names from registry (picks up renames from wrap/--rename)
+    def _sync(self, now):
+        """Phase 4: Registry sync + prompt queue update."""
         if not hasattr(self, "_last_name_sync") or now - self._last_name_sync > 10:
             self._last_name_sync = now
             disk_reg = _load_registry()
-            # Merge disk into in-memory _registry so flush won't overwrite
             for sid, disk_entry in disk_reg.items():
                 if sid in _registry:
                     for key in ("name", "color", "wrapped"):
@@ -1625,9 +1693,7 @@ class Litter:
                 if disk_name and disk_name != cat.name:
                     _log("[sync] %s name: %s -> %s", cat.session_id[:8], cat.name, disk_name)
                     cat.name = disk_name
-        # Update prompt queue from cat permission states
         self._update_prompt_queue()
-        return dirty
 
     def _update_prompt_queue(self):
         """Sync prompt queue with cat permission/question states."""
