@@ -791,15 +791,14 @@ class Cat:
                         if not text:
                             continue
                         text = text.rstrip()
-                        # Check for numbered options at line starts (1. ... 2. ...)
-                        # Must have at least "1." and "2." at start of lines to avoid
-                        # false positives from prose like "Step 1. do X"
+                        # Only detect numbered options at line starts (actionable from clat).
+                        # Plain questions ending with "?" are just conversational — user
+                        # answers those in the session window, not through clat.
                         if re.search(r"^\s*1\.", text, re.MULTILINE) and \
                            re.search(r"^\s*2\.", text, re.MULTILINE):
-                            return self._parse_question(text)
-                        # Check for question ending with ?
-                        if text.endswith("?"):
-                            return {"type": "question", "text": text[-500:], "options": []}
+                            result = self._parse_question(text)
+                            if result and result.get("options"):
+                                return result
                         return None
                 except (json.JSONDecodeError, KeyError):
                     continue
