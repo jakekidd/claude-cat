@@ -2898,18 +2898,22 @@ def code_mode(child_args):
                         registry_flush_force()
 
             # Check for response files from litter
+            # Delay delivery by 500ms so the permission prompt has time to render
             if wrap_session_id:
                 resp_path = os.path.join(STATE_DIR, STATE_PREFIX + wrap_session_id + "-response")
                 try:
                     if os.path.exists(resp_path):
-                        with open(resp_path) as rf:
-                            response = rf.read().strip()
-                        os.remove(resp_path)
-                        if response in ("1", "2", "3"):
-                            os.write(master_fd, response.encode())
-                        elif response:
-                            # Arbitrary text input — send with Enter
-                            os.write(master_fd, (response + "\r").encode())
+                        resp_mtime = os.path.getmtime(resp_path)
+                        if time.time() - resp_mtime < 0.5:
+                            pass  # wait for prompt to render
+                        else:
+                            with open(resp_path) as rf:
+                                response = rf.read().strip()
+                            os.remove(resp_path)
+                            if response in ("1", "2", "3"):
+                                os.write(master_fd, response.encode())
+                            elif response:
+                                os.write(master_fd, (response + "\r").encode())
                 except OSError:
                     pass
 
