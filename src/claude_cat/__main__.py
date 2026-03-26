@@ -1881,7 +1881,7 @@ class Litter:
         result.extend(lines[-bot_n:] if bot_n > 0 else [])
         return result
 
-    PROMPT_RESERVED_LINES = 6  # compact: 1 header + 3 content + 1 options + 1 pad (no prompt)
+    PROMPT_RESERVED_LINES = 1  # minimal spacer when no prompt active
     PROMPT_EXPANDED_LINES = 25  # expanded when prompt/question active
 
     def _render_prompt_widget(self, now):
@@ -3002,6 +3002,17 @@ def litter_mode(sprite_data=None):
     import fcntl
     import termios
     import tty
+    # Single-instance enforcement: only one clat can interact with sessions
+    lock_path = os.path.join(STATE_DIR, "clat.lock")
+    os.makedirs(STATE_DIR, exist_ok=True)
+    lock_fd = open(lock_path, "w")
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (IOError, OSError):
+        print("Another clat instance is already running.")
+        print("Only one interactive clat session is allowed (it sends responses to clat code).")
+        lock_fd.close()
+        sys.exit(1)
     _init_logging()
     _log("claude-cat v%s litter started", VERSION)
     _log("state_dir=%s  prefix=%s", STATE_DIR, STATE_PREFIX)
@@ -3085,6 +3096,13 @@ def litter_mode(sprite_data=None):
         termios.tcsetattr(fd, termios.TCSADRAIN, old_term)
         sys.stdout.write(SHOW + "\n")
         sys.stdout.flush()
+        # Release lock
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            lock_fd.close()
+            os.remove(lock_path)
+        except OSError:
+            pass
 
 
 def target_mode(session_id, sprite_data=None):
@@ -3182,21 +3200,21 @@ def print_help():
         "claude-cat v%s\n"
         "A 1-bit companion cat for Claude Code\n\n"
         "Usage:\n"
-        "  claude-cat                       Litter mode (all sessions)\n"
-        "  claude-cat --target <session_id> Single cat for one session\n"
-        "  claude-cat --tmux-ccm            Dashboard: CCM + litter in tmux\n"
-        "  claude-cat --sprite <name|path>  Use a custom sprite\n"
-        "  claude-cat install               Set up Claude Code hooks\n"
-        "  claude-cat uninstall             Remove Claude Code hooks\n"
-        "  claude-cat --demo                Preview all states + reactions\n"
-        "  claude-cat list-sprites          Show available sprites\n"
-        "  claude-cat --meow                Identify this session's cat (flash it)\n"
-        "  claude-cat code                   New session (prompts for name)\n"
-        "  claude-cat code my-feature        Resume 'my-feature' or create new\n"
-        "  claude-cat code --resume <id>     Resume by session id\n"
-        "  claude-cat --debug               Verbose logging (also prints to stderr)\n"
-        "  claude-cat --trace               Dense state machine trace (logs/trace.jsonl)\n"
-        "  claude-cat --version             Show version" % VERSION
+        "  clat                             Monitor all sessions\n"
+        "  clat code                        New session (prompts for name)\n"
+        "  clat code my-feature             Resume 'my-feature' or create new\n"
+        "  clat code --resume <id>          Resume by session id\n"
+        "  clat --rename <name> [new-name]  Rename a session\n"
+        "  clat install                     Set up Claude Code hooks\n"
+        "  clat uninstall                   Remove Claude Code hooks\n"
+        "  clat --sprite <name|path>        Use a custom sprite\n"
+        "  clat --demo                      Preview all states + reactions\n"
+        "  clat list-sprites                Show available sprites\n"
+        "  clat --meow                      Identify this session's cat (flash it)\n"
+        "  clat --tmux-ccm                  Dashboard: CCM + litter in tmux\n"
+        "  clat --debug                     Verbose logging (also prints to stderr)\n"
+        "  clat --trace                     Dense state machine trace (logs/trace.jsonl)\n"
+        "  clat --version                   Show version" % VERSION
     )
 
 
@@ -3204,15 +3222,11 @@ def main():
     global DEBUG, TRACE
     args = sys.argv[1:]
     sprite_name = None
-    target_session = None
     filtered = []
     i = 0
     while i < len(args):
         if args[i] == "--sprite" and i + 1 < len(args):
             sprite_name = args[i + 1]
-            i += 2
-        elif args[i] == "--target" and i + 1 < len(args):
-            target_session = args[i + 1]
             i += 2
         elif args[i] == "--debug":
             DEBUG = True
@@ -3392,10 +3406,7 @@ def main():
     elif cmd in ("--version", "-v"):
         print(VERSION)
     elif cmd in ("", "--watch", "watch"):
-        if target_session:
-            target_mode(target_session, sprite_data)
-        else:
-            litter_mode(sprite_data)
+        litter_mode(sprite_data)
     else:
         print("Unknown command: %s" % cmd)
         print_help()

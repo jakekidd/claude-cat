@@ -87,6 +87,12 @@ Thought bubble during Agent/subagent work. Heart on positive interactions. Music
 
 ## Backlog
 
+### Read-only observer mode
+Allow multiple clat instances that only monitor (no response file writing). Main instance holds the lock and handles interactions. Observers get a `--watch` flag.
+
+### Targeted single-cat mode
+`clat --focus <name>` shows one cat full-screen with expanded stats, full log tail, detailed state history. Read-only (no response routing).
+
 ### Cat personality titles
 Derived from tool usage ratios. "bookworm" (mostly reads), "chaos gremlin" (lots of errors), "crazy cat lady" (many agent spawns).
 
