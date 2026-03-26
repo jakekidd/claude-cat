@@ -93,6 +93,9 @@ Allow multiple clat instances that only monitor (no response file writing). Main
 ### Targeted single-cat mode
 `clat --focus <name>` shows one cat full-screen with expanded stats, full log tail, detailed state history. Read-only (no response routing).
 
+### Stream stdout to selected cat display
+Show Claude's actual output (not tool results, just assistant text) streamed live in the cat's display area. When a user prompt is active, temporarily overwrite with the prompt widget. Requires filtering .out file for assistant text vs tool output noise.
+
 ### Cat personality titles
 Derived from tool usage ratios. "bookworm" (mostly reads), "chaos gremlin" (lots of errors), "crazy cat lady" (many agent spawns).
 

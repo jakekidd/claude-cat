@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """claude-cat -- a 1-bit companion cat for Claude Code."""
 
+import datetime
 import glob
 import json
 import os
@@ -97,7 +98,6 @@ def _log(msg, *args):
         _litter_log.flush()
         # Extract session_id prefix like [4a2abe2c] and write to per-cat log
         if line and "[" in line:
-            import re
             m = re.search(r"\[([0-9a-f]{8})\]", line)
             if m:
                 short = m.group(1)
@@ -833,7 +833,6 @@ class Cat:
 
     def _read_stats(self, transcript_path):
         """Sum token usage from transcript for session cost/context display."""
-        import datetime
         try:
             if not os.path.exists(transcript_path):
                 return
@@ -1746,7 +1745,6 @@ class Litter:
 
     def _render_status_bar(self, valid, now):
         """Compact burn rate / cost rate / prediction bar at the top."""
-        import datetime
         total_cost = 0.0
         total_tok = 0
         earliest_start = now
@@ -2230,9 +2228,7 @@ class Litter:
             labels.append(id_text)
         if stats:
             labels.append(stats)
-        if msg:
-            labels.append(DIM + msg + RST)
-        # Separator + debug info below
+        # Separator
         try:
             sep_w = os.get_terminal_size().columns
         except OSError:
@@ -2240,15 +2236,18 @@ class Litter:
         sprite_w = len(sprite[0]) if sprite else 14
         sep_len = max(5, sep_w - sprite_w - 4)
         labels.append(DIM + "\u2501" * sep_len + RST)
-        # Debug log line
-        last_log = cat_last_log(cat.session_id)
-        if last_log:
-            import re
-            log_display = re.sub(r"^\[[0-9a-f]{8}\] ", "", last_log)
-            max_log = max(5, sep_len)
-            if len(log_display) > max_log:
-                log_display = log_display[:max(2, max_log - 3)] + "..."
-            labels.append(DIM + log_display + RST)
+        # Last message (white, not dim)
+        if msg:
+            labels.append(msg)
+        # Debug log line (only with --debug flag)
+        if DEBUG:
+            last_log = cat_last_log(cat.session_id)
+            if last_log:
+                log_display = re.sub(r"^\[[0-9a-f]{8}\] ", "", last_log)
+                max_log = max(5, sep_len)
+                if len(log_display) > max_log:
+                    log_display = log_display[:max(2, max_log - 3)] + "..."
+                labels.append(DIM + log_display + RST)
 
         # Context bar on left side
         sprite_height = len(sprite)
