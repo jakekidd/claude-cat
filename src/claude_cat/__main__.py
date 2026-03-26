@@ -451,7 +451,6 @@ _NEIGHBORS = {
     "down-right": ["down", "right", "center"],
 }
 # Error patterns in Claude Code stdout
-_ERROR_PATTERNS = (b"API Error", b"Rate limit", b"Request too large", b"Overloaded")
 
 # Tool name -> cat state
 TOOL_STATES = {
@@ -658,14 +657,12 @@ class Cat:
         self.permission_input = {}  # tool_input for pending permission
         self.flashing = False  # meow flash (5s color cycling)
         self.flash_end = 0.0
-        self.last_wrapper_ts = 0.0  # last WrapperState event timestamp
         self.subagent_depth = 0    # number of active subagents
         # Stdout tee parsing state (litter-side)
         self.out_file = os.path.join(STATE_DIR, STATE_PREFIX + session_id + ".out") if session_id else ""
         self.last_out_mtime = 0.0
         self.last_out_content = ""
-        self.last_spinner_ts = 0.0
-        self.spinner_active = False
+        self.spinner_active = False  # gates duplicate spinner→thinking transitions
         self.thought_seconds = 0
         # Pending question (planning questions with numbered options)
         self.pending_question = None  # {type, text, options} or None
@@ -704,7 +701,6 @@ class Cat:
         self.stats_read = False
         self.last_transcript_read = 0.0
         self._last_stats_read = 0.0
-        self.event_count = 0
         # Lifecycle
         self.dead = False
         self.dead_since = 0.0
@@ -988,6 +984,7 @@ class Cat:
             self.next_frame = time.time() + 0.5
         elif ev == "Stop":
             self.state = "idle"
+            self.spinner_active = False
             tp = data.get("transcript_path", "") or self.transcript_path
             if self._check_error_tail(tp):
                 self.reaction = "error"
@@ -1019,31 +1016,30 @@ class Cat:
                 self.reaction_end = time.time() + 8.0
                 self.reaction_msg = "asking..."
                 _log("[%s] AskUserQuestion -> idle/asking (answer in session window)", sid_short)
-            elif self.subagent_depth > 0:
-                # Subagent permission — can't route response to subagent via main stdin
-                _log("[%s] subagent permission (depth=%d) tool=%s — skipping prompt", sid_short, self.subagent_depth, tool)
             else:
-                # Check auto-approve mode
+                # Check auto-approve mode (fires regardless of subagent depth)
                 mode = registry_get_approve_mode(self.session_id)
                 if mode == "automatic":
-                    # Auto-approve: write "1" (Yes) — not "2" (Always) to avoid
-                    # permanently whitelisting permissions that accumulate while in auto
                     try:
                         resp_path = os.path.join(STATE_DIR, STATE_PREFIX + self.session_id + "-response")
                         with open(resp_path, "w") as f:
                             f.write("1")
                     except OSError:
                         pass
-                    _log("[%s] auto-approved (automatic mode) tool=%s", sid_short, tool)
+                    _log("[%s] auto-approved (automatic mode) tool=%s depth=%d",
+                         sid_short, tool, self.subagent_depth)
                 elif mode == "guarded" and _is_guarded_safe(tool, data.get("tool_input", {}), self.cwd):
-                    # Guarded: safe operation, auto-approve
                     try:
                         resp_path = os.path.join(STATE_DIR, STATE_PREFIX + self.session_id + "-response")
                         with open(resp_path, "w") as f:
                             f.write("1")
                     except OSError:
                         pass
-                    _log("[%s] guarded-approved tool=%s", sid_short, tool)
+                    _log("[%s] guarded-approved tool=%s depth=%d", sid_short, tool, self.subagent_depth)
+                elif self.subagent_depth > 0:
+                    # Subagent permission in manual mode — can't route to subagent stdin
+                    _log("[%s] subagent permission (depth=%d) tool=%s — skipping prompt",
+                         sid_short, self.subagent_depth, tool)
                 else:
                     self.permission_pending = True
                     self.permission_tool = tool
@@ -1095,7 +1091,6 @@ class Cat:
             _log("[%s] Interrupted event -> idle/interrupted", sid_short)
         elif ev == "WrapperState":
             ws = data.get("wrapper_state", "")
-            self.last_wrapper_ts = time.time()
             if ws == "interrupted":
                 self.state = "idle"
                 self.sleeping = False
@@ -1129,21 +1124,8 @@ class Cat:
 
         if tool:
             self.last_tool = tool
-        self.event_count += 1
         self.last_event = time.time()
 
-    def handle_event(self, data):
-        """Process event with wake-up animation (for target mode)."""
-        ev = data.get("event", "")
-        wake_events = ("UserPromptSubmit", "PostToolUse", "SubagentStart", "PreCompact", "Stop")
-        if self.sleeping and ev in wake_events:
-            self.sleeping = False
-            self.reaction = "surprised"
-            self.reaction_end = time.time() + 0.5
-            self.render()
-            time.sleep(0.4)
-        self._process_event(data)
-        self.render()
 
     def tick(self, now):
         """Advance animation timers. Returns True if display changed."""
@@ -1604,7 +1586,6 @@ class Litter:
             elif etype == "stdout_spinner":
                 if sid in hook_sids:
                     continue
-                cat.last_spinner_ts = now
                 if not cat.spinner_active:
                     cat.spinner_active = True
                     old_s = cat.state
@@ -1612,7 +1593,6 @@ class Litter:
                         cat.state = "thinking"
                         cat.sleeping = False
                         cat.frame_idx = 0
-                        cat.last_wrapper_ts = now
                         dirty = True
                         _log("[stdout] %s -> thinking (spinner)", sid[:8])
                         _trace(sid, "stdout", "spinner_start", old_s, "thinking")
@@ -1629,7 +1609,6 @@ class Litter:
                     old_s = cat.state
                     cat.state = "compacting"
                     cat.frame_idx = 0
-                    cat.last_wrapper_ts = now
                     dirty = True
                     _log("[stdout] %s -> compacting", sid[:8])
                     _trace(sid, "stdout", "compacting", old_s, "compacting")
@@ -2036,7 +2015,7 @@ class Litter:
                 and not self.cats[sid].dead and registry_is_wrapped(sid)]
 
     def cycle_cat(self, direction):
-        """Move cat selector up (+1) or down (-1)."""
+        """Move cat selector by direction (+1/-1)."""
         sids = self._get_selectable_sids()
         if not sids:
             return
@@ -3080,9 +3059,9 @@ def litter_mode(sprite_data=None):
                         # Prompt response: numbers only (1=Yes/2=Always/3=No for perms)
                         litter.handle_prompt_response(ch)
                     elif ch == "\x1b[A" or ch == "\x1b[Z":  # up arrow or shift-tab
-                        litter.cycle_cat(-1)
-                    elif ch == "\x1b[B" or ch == "\t":  # down arrow or tab
                         litter.cycle_cat(1)
+                    elif ch == "\x1b[B" or ch == "\t":  # down arrow or tab
+                        litter.cycle_cat(-1)
                     elif ch in ("\r", "\n"):
                         litter.start_input()
                     elif ch == "\\":
