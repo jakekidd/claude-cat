@@ -1960,7 +1960,7 @@ class Litter:
         for _ in range(total - used):
             out += CLRL + "\n"
         # Options
-        out += "  " + DIM + "[1] Yes  " + CSI + "32m" + BOLD + "[2/enter] Always" + RST + DIM + "  [3] No" + RST + CLRL + "\n"
+        out += "  " + CSI + "32m" + BOLD + "[1/enter] Yes" + RST + DIM + "  [2] Always  [3] No" + RST + CLRL + "\n"
         out += CLRL + "\n"
         return out
 
@@ -2100,9 +2100,10 @@ class Litter:
             elif key in ("\r", "\n"):
                 response = "1"  # Enter = first option
         else:
-            # Permission: 1=Yes, 2=Always, 3=No, Enter=Always
+            # Permission: 1=Yes, 2=Always/Yes-dont-ask, 3=No, Enter=Yes
+            # Enter always sends "1" (safe for both 2-option and 3-option prompts)
             if key in ("\r", "\n"):
-                response = "2"  # Enter = Always
+                response = "1"  # Enter = Yes (always safe)
             elif key == "1":
                 response = "1"  # Yes
             elif key == "2":
