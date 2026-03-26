@@ -1199,10 +1199,8 @@ class Cat:
         active = self.state not in ("idle", "compacting")
         is_wrapped = registry_is_wrapped(self.session_id) if self.session_id else False
 
-        # Timeout-based state transitions only for unwrapped sessions.
-        # Wrapped sessions get state from stdout parsing (WrapperState events).
         if not is_wrapped:
-            # active/reading|cooking|browsing + 15s quiet => active/thinking
+            # Unwrapped: aggressive timeouts (no stdout signal)
             if self.state in ("reading", "cooking", "browsing") and not self.reaction and quiet > 15:
                 old_s = self.state
                 _log("[%s] timeout: %s -> thinking (%.0fs quiet)", self.session_id[:8], self.state, quiet)
@@ -1210,17 +1208,23 @@ class Cat:
                 self.frame_idx = 0
                 dirty = True
                 _trace(self.session_id, "timeout", "15s_quiet", old_s, "thinking", quiet=round(quiet, 1))
-
-            # active/thinking + 45s quiet => idle + interrupted reaction
             if self.state == "thinking" and not self.reaction and quiet > 45:
-                _log("[%s] timeout: thinking -> idle/interrupted (%.0fs quiet)", self.session_id[:8], quiet)
-                self.reaction = "interrupted"
-                self.reaction_end = now + self.reactions.get("interrupted", {}).get("hold", 7.0)
-                self.reaction_msg = "interrupted"
+                _log("[%s] timeout: thinking -> idle (%.0fs quiet)", self.session_id[:8], quiet)
                 self.state = "idle"
                 self.sleeping = False
                 dirty = True
                 _trace(self.session_id, "timeout", "45s_quiet", "thinking", "idle", quiet=round(quiet, 1))
+        elif active and not self.reaction and quiet > 120:
+            # Wrapped: safety-net timeout (2min). Stop hook is primary, this is backstop
+            # for when Stop event is lost (file overwrite race).
+            old_s = self.state
+            _log("[%s] timeout: %s -> idle (%.0fs quiet, wrapped safety-net)",
+                 self.session_id[:8], self.state, quiet)
+            self.state = "idle"
+            self.spinner_active = False
+            self.sleeping = False
+            dirty = True
+            _trace(self.session_id, "timeout", "120s_wrapped_safety", old_s, "idle", quiet=round(quiet, 1))
 
         # idle + 10min => sleeping (visual only, applies to all sessions)
         # Guard: don't sleep if we just set a reaction (e.g. interrupted)
