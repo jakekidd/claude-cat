@@ -666,8 +666,6 @@ class Cat:
         self.last_out_content = ""
         self.last_spinner_ts = 0.0
         self.spinner_active = False
-        self.pending_idle = False
-        self.pending_idle_ts = 0.0
         self.thought_seconds = 0
         # Pending question (planning questions with numbered options)
         self.pending_question = None  # {type, text, options} or None
@@ -1006,7 +1004,11 @@ class Cat:
                 else:
                     self.reaction = "happy"
                     self.reaction_end = time.time() + self.reactions.get("happy", {}).get("hold", 4.0)
-                    self.reaction_msg = "done!"
+                    if self.thought_seconds:
+                        self.reaction_msg = "thought %ds" % self.thought_seconds
+                        self.thought_seconds = 0
+                    else:
+                        self.reaction_msg = "done!"
                     self.overlay = "bulb"
                     self.overlay_end = time.time() + OVERLAYS["bulb"]["duration"]
         elif ev == "PermissionRequest":
@@ -1547,15 +1549,6 @@ class Litter:
                                 out_content = content
                 except (OSError, ValueError):
                     pass
-            # Advance spinner tracking cursors (tracking, not display state)
-            if is_wrapped:
-                if cat.spinner_active and cat.last_spinner_ts and now - cat.last_spinner_ts > 3.0:
-                    cat.spinner_active = False
-                    if not cat.pending_idle:
-                        cat.pending_idle = True
-                        cat.pending_idle_ts = now
-                if cat.pending_idle and now - cat.last_event < 5.0:
-                    cat.pending_idle = False
             result[sid] = {"is_wrapped": is_wrapped, "hook_data": hook_data,
                            "new_text": new_text, "out_content": out_content}
         return result
@@ -1590,9 +1583,8 @@ class Litter:
                     m = _THOUGHT_RE.search(g["out_content"][-200:])
                     if m:
                         events.append(("stdout_thought", sid, int(m.group(1))))
-            # Timeout: spinner→idle (pending_idle already advanced in _gather)
-            if g["is_wrapped"] and cat.pending_idle and now - cat.pending_idle_ts > 3.0:
-                events.append(("timeout_spinner_idle", sid, None))
+            # No spinner→idle timeout for wrapped sessions.
+            # Stop hook event is the sole path to idle (reliable, no false positives).
         return events
 
     def _apply(self, events, now):
@@ -1613,7 +1605,6 @@ class Litter:
                 if sid in hook_sids:
                     continue
                 cat.last_spinner_ts = now
-                cat.pending_idle = False
                 if not cat.spinner_active:
                     cat.spinner_active = True
                     old_s = cat.state
@@ -1644,30 +1635,6 @@ class Litter:
                     _trace(sid, "stdout", "compacting", old_s, "compacting")
             elif etype == "stdout_thought":
                 cat.thought_seconds = detail
-            elif etype == "timeout_spinner_idle":
-                if sid in hook_sids:
-                    continue
-                cat.pending_idle = False
-                old_s = cat.state
-                if cat.state != "idle":
-                    cat.state = "idle"
-                    cat.last_wrapper_ts = now
-                    _trace(sid, "timeout", "spinner_stop+hook_quiet", old_s, "idle",
-                           spinner_silence=round(now - cat.last_spinner_ts, 1),
-                           hook_silence=round(now - cat.last_event, 1))
-                    if cat.thought_seconds:
-                        cat.reaction = "happy"
-                        cat.reaction_end = now + 4.0
-                        cat.reaction_msg = "thought %ds" % cat.thought_seconds
-                        cat.thought_seconds = 0
-                    else:
-                        cat.reaction = "happy"
-                        cat.reaction_end = now + 4.0
-                        cat.reaction_msg = "done!"
-                    cat.overlay = "bulb"
-                    cat.overlay_end = now + 3.0
-                    dirty = True
-                    _log("[stdout] %s -> idle", sid[:8])
         # Run animation timers, timeouts, transcript refresh for all cats
         for cat in self.cats.values():
             if not cat.dead and cat.tick(now):
