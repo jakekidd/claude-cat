@@ -642,6 +642,8 @@ class Cat:
         self.pending_idle = False
         self.pending_idle_ts = 0.0
         self.thought_seconds = 0
+        # Pending question (planning questions with numbered options)
+        self.pending_question = None  # {type, text, options} or None
         # Reaction = brief face override from events (expires)
         self.reaction = None
         self.reaction_end = 0.0
@@ -737,41 +739,75 @@ class Cat:
         return False
 
     def _check_waiting(self, transcript_path):
-        """Check if the session appears to be waiting for user input.
+        """Check if the session is waiting for user input.
 
-        Only triggers if the very last message-type entry in the transcript is
-        an assistant message that ends with a question or presents choices.
+        Returns a dict with question info, or None if not waiting.
+        Returns: {type: "question", text: str, options: [str, ...]} or None.
         """
         try:
             if not transcript_path or not os.path.exists(transcript_path):
-                return False
+                return None
             with open(transcript_path, "rb") as f:
                 f.seek(0, 2)
                 size = f.tell()
                 chunk = min(8192, size)
                 f.seek(size - chunk)
                 lines = f.read().decode("utf-8", errors="ignore").strip().split("\n")
-            # Find the last message-type entry (assistant or user)
             for line in reversed(lines):
                 try:
                     entry = json.loads(line)
                     t = entry.get("type", "")
                     if t in ("human", "user"):
-                        return False  # user spoke last, not waiting
+                        return None
                     if t == "assistant":
                         text = self._extract_text(entry)
                         if not text:
                             continue
-                        if text.rstrip().endswith("?"):
-                            return True
+                        text = text.rstrip()
+                        # Check for numbered options (1. ... 2. ... etc.)
                         if "1." in text and "2." in text:
-                            return True
-                        return False
+                            return self._parse_question(text)
+                        # Check for question ending with ?
+                        if text.endswith("?"):
+                            return {"type": "question", "text": text[-500:], "options": []}
+                        return None
                 except (json.JSONDecodeError, KeyError):
                     continue
         except Exception:
             pass
-        return False
+        return None
+
+    def _parse_question(self, text):
+        """Extract question text and numbered options from assistant message."""
+        import re
+        lines = text.split("\n")
+        question_lines = []
+        options = []
+        current_option = []
+        current_num = None
+        for line in lines:
+            m = re.match(r"^\s*(\d+)\.\s+(.+)", line)
+            if m:
+                if current_num is not None and current_option:
+                    options.append("%d. %s" % (current_num, " ".join(current_option)))
+                current_num = int(m.group(1))
+                current_option = [m.group(2).strip()]
+            elif current_num is not None:
+                stripped = line.strip()
+                if stripped:
+                    current_option.append(stripped)
+                elif current_option:
+                    options.append("%d. %s" % (current_num, " ".join(current_option)))
+                    current_num = None
+                    current_option = []
+            else:
+                stripped = line.strip()
+                if stripped:
+                    question_lines.append(stripped)
+        if current_num is not None and current_option:
+            options.append("%d. %s" % (current_num, " ".join(current_option)))
+        question_text = "\n".join(question_lines[-6:]) if question_lines else ""
+        return {"type": "question", "text": question_text, "options": options}
 
     def _read_stats(self, transcript_path):
         """Sum token usage from transcript for session cost/context display."""
@@ -930,15 +966,19 @@ class Cat:
                 self.reaction_end = time.time() + self.reactions.get("error", {}).get("hold", 4.0)
                 self.reaction_msg = "crashed"
                 _log("[%s] Stop with error tail -> reaction:error/crashed", sid_short)
-            elif self._check_waiting(tp):
-                self.permission_pending = True
-                _log("[%s] Stop with question -> permission dot (waiting)", sid_short)
             else:
-                self.reaction = "happy"
-                self.reaction_end = time.time() + self.reactions.get("happy", {}).get("hold", 4.0)
-                self.reaction_msg = "done!"
-                self.overlay = "bulb"
-                self.overlay_end = time.time() + OVERLAYS["bulb"]["duration"]
+                waiting = self._check_waiting(tp)
+                if waiting:
+                    self.permission_pending = True
+                    self.pending_question = waiting
+                    _log("[%s] Stop with question -> permission dot (waiting, %d options)",
+                         sid_short, len(waiting.get("options", [])))
+                else:
+                    self.reaction = "happy"
+                    self.reaction_end = time.time() + self.reactions.get("happy", {}).get("hold", 4.0)
+                    self.reaction_msg = "done!"
+                    self.overlay = "bulb"
+                    self.overlay_end = time.time() + OVERLAYS["bulb"]["duration"]
         elif ev == "PermissionRequest":
             if tool == "AskUserQuestion":
                 # Not a permission — it's a question needing typed input in the session window
@@ -1619,23 +1659,39 @@ class Litter:
         return dirty
 
     def _update_prompt_queue(self):
-        """Sync prompt queue with cat permission states."""
+        """Sync prompt queue with cat permission/question states."""
         now = time.time()
         active_sids = set()
         for cat in self.cats.values():
-            if cat.permission_pending and cat.permission_tool:
-                active_sids.add(cat.session_id)
-                # Add to queue if not already there
-                if not any(p["session_id"] == cat.session_id for p in self.prompt_queue):
-                    self.prompt_queue.append({
-                        "session_id": cat.session_id,
-                        "name": cat.name,
-                        "color": cat.color,
-                        "tool": cat.permission_tool,
-                        "input": cat.permission_input,
-                        "ts": now,
-                    })
-        # Remove stale prompts: cat no longer pending, or prompt older than 2 min
+            if not cat.permission_pending:
+                continue
+            active_sids.add(cat.session_id)
+            if any(p["session_id"] == cat.session_id for p in self.prompt_queue):
+                continue
+            if cat.pending_question:
+                # Planning question with numbered options
+                self.prompt_queue.append({
+                    "session_id": cat.session_id,
+                    "name": cat.name,
+                    "color": cat.color,
+                    "type": "question",
+                    "text": cat.pending_question.get("text", ""),
+                    "options": cat.pending_question.get("options", []),
+                    "tool": "",
+                    "input": {},
+                    "ts": now,
+                })
+            elif cat.permission_tool:
+                # Permission prompt (Y/A/N)
+                self.prompt_queue.append({
+                    "session_id": cat.session_id,
+                    "name": cat.name,
+                    "color": cat.color,
+                    "type": "permission",
+                    "tool": cat.permission_tool,
+                    "input": cat.permission_input,
+                    "ts": now,
+                })
         self.prompt_queue = [
             p for p in self.prompt_queue
             if p["session_id"] in active_sids and now - p["ts"] < 120
@@ -1825,48 +1881,67 @@ class Litter:
         result.extend(lines[-bot_n:] if bot_n > 0 else [])
         return result
 
-    PROMPT_RESERVED_LINES = 8  # 1 header + 5 content + 1 options + 1 pad
+    PROMPT_RESERVED_LINES = 6  # compact: 1 header + 3 content + 1 options + 1 pad (no prompt)
+    PROMPT_EXPANDED_LINES = 25  # expanded when prompt/question active
 
     def _render_prompt_widget(self, now):
-        """Render the permission prompt area. Always returns PROMPT_RESERVED_LINES lines for layout stability."""
+        """Render the interaction area. Expands when a prompt is active, compact when idle."""
         try:
             term_w = os.get_terminal_size().columns
         except OSError:
             term_w = 80
 
+        has_prompt = bool(self.prompt_queue) or self.input_mode
+        total = self.PROMPT_EXPANDED_LINES if has_prompt else self.PROMPT_RESERVED_LINES
+
         if self.input_mode:
-            # Input mode: show text entry for the target cat
-            target_cat = self.cats.get(self.input_target_sid)
-            target_name = target_cat.name if target_cat else self.input_target_sid[:16]
-            target_color = target_cat.color if target_cat else 208
-            tfg = CSI + "38;5;%dm" % target_color
-            out = ""
-            header = " send to %s " % target_name
-            pad = max(0, term_w - len(header) - 2)
-            out += tfg + DIM + "\u2500\u2500" + RST + tfg + BOLD + header + RST + tfg + DIM + "\u2500" * pad + RST + CLRL + "\n"
-            # Input line with cursor
-            cursor = "\u2588"  # block cursor
-            buf_display = self.input_buffer
-            max_buf = term_w - 6
-            if len(buf_display) > max_buf:
-                buf_display = buf_display[-(max_buf - 1):]
-            out += "  > " + buf_display + cursor + CLRL + "\n"
-            # Pad remaining lines
-            for _ in range(self.PROMPT_RESERVED_LINES - 3):
-                out += CLRL + "\n"
-            out += "  " + DIM + "enter=send  esc=cancel" + RST + CLRL + "\n"
-            return out
+            return self._render_input_widget(term_w, total)
 
         if not self.prompt_queue:
-            # Empty reservation: blank lines to hold space
-            return (CLRL + "\n") * self.PROMPT_RESERVED_LINES
+            return (CLRL + "\n") * total
 
-        prompt = self.prompt_queue[0]  # Show first in queue
-        content_lines = self.PROMPT_RESERVED_LINES - 3  # header + options + pad
+        prompt = self.prompt_queue[0]
+        ptype = prompt.get("type", "permission")
 
-        # Format content
+        if ptype == "question":
+            return self._render_question_widget(prompt, term_w, total)
+        else:
+            return self._render_permission_widget(prompt, term_w, total)
+
+    def _render_input_widget(self, term_w, total):
+        """Render text input mode."""
+        target_cat = self.cats.get(self.input_target_sid)
+        target_name = target_cat.name if target_cat else self.input_target_sid[:16]
+        target_color = target_cat.color if target_cat else 208
+        tfg = CSI + "38;5;%dm" % target_color
+        out = ""
+        header = " send to %s " % target_name
+        pad = max(0, term_w - len(header) - 2)
+        out += tfg + DIM + "\u2500\u2500" + RST + tfg + BOLD + header + RST + tfg + DIM + "\u2500" * pad + RST + CLRL + "\n"
+        cursor = "\u2588"
+        buf_display = self.input_buffer
+        max_buf = term_w - 6
+        if len(buf_display) > max_buf:
+            buf_display = buf_display[-(max_buf - 1):]
+        out += "  > " + buf_display + cursor + CLRL + "\n"
+        for _ in range(total - 3):
+            out += CLRL + "\n"
+        out += "  " + DIM + "enter=send  esc=cancel" + RST + CLRL + "\n"
+        return out
+
+    def _render_permission_widget(self, prompt, term_w, total):
+        """Render Y/A/N permission prompt."""
+        fg = CSI + "38;5;%dm" % prompt["color"] if prompt["color"] else ""
+        name = prompt["name"]
+        queue_info = " (%d pending)" % len(self.prompt_queue) if len(self.prompt_queue) > 1 else ""
+        out = ""
+        # Header
+        header = " %s wants to run%s " % (name, queue_info)
+        pad = max(0, term_w - len(header) - 2)
+        out += fg + DIM + "\u2500\u2500" + RST + fg + BOLD + header + RST + fg + DIM + "\u2500" * pad + RST + CLRL + "\n"
+        # Content (6 lines for command details)
+        content_lines = 6
         raw_lines = self._format_prompt_content(prompt)
-        # Truncate each line to terminal width
         trimmed = []
         for l in raw_lines:
             if len(l) > term_w - 4:
@@ -1874,28 +1949,82 @@ class Litter:
             else:
                 trimmed.append(l)
         display = self._center_truncate(trimmed, content_lines)
-
-        fg = CSI + "38;5;%dm" % prompt["color"] if prompt["color"] else ""
-        name = prompt["name"]
-        queue_info = " (%d pending)" % len(self.prompt_queue) if len(self.prompt_queue) > 1 else ""
-
-        out = ""
-        # Header
-        header = " %s wants to run%s " % (name, queue_info)
-        pad = max(0, term_w - len(header) - 2)
-        out += fg + DIM + "\u2500\u2500" + RST + fg + BOLD + header + RST + fg + DIM + "\u2500" * pad + RST + CLRL + "\n"
-
-        # Content lines (padded to fixed height)
         for i in range(content_lines):
             if i < len(display):
                 out += "  " + DIM + display[i] + RST + CLRL + "\n"
             else:
                 out += CLRL + "\n"
-
+        # Pad middle
+        used = 1 + content_lines + 2  # header + content + options + pad
+        for _ in range(total - used):
+            out += CLRL + "\n"
         # Options
-        out += "  " + CSI + "32m" + BOLD + "> [Y]es" + RST + "  [A]lways  [N]o" + CLRL + "\n"
-        # Pad line
+        out += "  " + CSI + "32m" + BOLD + "> [enter]=Always" + RST + "  [Y]es  [N]o" + CLRL + "\n"
         out += CLRL + "\n"
+        return out
+
+    def _render_question_widget(self, prompt, term_w, total):
+        """Render planning question with numbered options."""
+        fg = CSI + "38;5;%dm" % prompt["color"] if prompt["color"] else ""
+        name = prompt["name"]
+        options = prompt.get("options", [])
+        question_text = prompt.get("text", "")
+        out = ""
+        # Header
+        header = " %s is asking " % name
+        pad = max(0, term_w - len(header) - 2)
+        out += fg + DIM + "\u2500\u2500" + RST + fg + BOLD + header + RST + fg + DIM + "\u2500" * pad + RST + CLRL + "\n"
+        lines_used = 1  # header
+        # Question text (up to 6 lines)
+        max_question = 6
+        q_lines = question_text.split("\n") if question_text else []
+        q_display = []
+        for l in q_lines:
+            if len(l) > term_w - 4:
+                q_display.append(l[:term_w - 7] + "...")
+            else:
+                q_display.append(l)
+        if len(q_display) > max_question:
+            q_display = q_display[:max_question - 1] + ["..."]
+        for l in q_display:
+            out += "  " + l + CLRL + "\n"
+            lines_used += 1
+        # Pad to fill max_question lines
+        for _ in range(max_question - len(q_display)):
+            out += CLRL + "\n"
+            lines_used += 1
+        # Options area: divide remaining space equally among options
+        # Reserve 1 line for controls at bottom
+        options_area = total - lines_used - 1
+        if options:
+            lines_per = max(1, options_area // len(options))
+            for i, opt in enumerate(options):
+                # Truncate option to allocated lines
+                opt_lines = opt.split("\n") if "\n" in opt else [opt]
+                # Wrap long lines
+                wrapped = []
+                for ol in opt_lines:
+                    while len(ol) > term_w - 6:
+                        wrapped.append(ol[:term_w - 6])
+                        ol = ol[term_w - 6:]
+                    wrapped.append(ol)
+                if len(wrapped) > lines_per:
+                    wrapped = wrapped[:lines_per - 1] + [wrapped[lines_per - 1][:term_w - 9] + "..."]
+                for j, wl in enumerate(wrapped):
+                    prefix = CSI + "33m" + BOLD + "  " + RST if j == 0 else "    "
+                    out += prefix + DIM + wl + RST + CLRL + "\n"
+                    lines_used += 1
+                # Pad remaining lines for this option
+                for _ in range(lines_per - len(wrapped)):
+                    out += CLRL + "\n"
+                    lines_used += 1
+        # Pad any remaining space
+        while lines_used < total - 1:
+            out += CLRL + "\n"
+            lines_used += 1
+        # Controls
+        nums = "  ".join("[%d]" % (i + 1) for i in range(min(len(options), 9)))
+        out += "  " + DIM + nums + RST + CLRL + "\n"
         return out
 
     def _get_selectable_sids(self):
@@ -1961,29 +2090,39 @@ class Litter:
             return None
         prompt = self.prompt_queue[0]
         sid = prompt["session_id"]
-        # Map key to response
+        ptype = prompt.get("type", "permission")
         response = None
-        if key in ("y", "Y", "1", "\r", "\n"):
-            response = "1"  # Yes
-        elif key in ("a", "A", "2"):
-            response = "2"  # Always
-        elif key in ("n", "N", "3"):
-            response = "3"  # No
+        if ptype == "question":
+            # Planning question: number keys select option
+            if key in "123456789":
+                response = key
+            elif key in ("\r", "\n"):
+                response = "1"  # Enter = first option
+        else:
+            # Permission: Enter=Always, Y=Yes, A=Always, N=No
+            if key in ("\r", "\n"):
+                response = "2"  # Enter = Always
+            elif key in ("y", "Y", "1"):
+                response = "1"  # Yes
+            elif key in ("a", "A", "2"):
+                response = "2"  # Always
+            elif key in ("n", "N", "3"):
+                response = "3"  # No
         if response:
-            # Write response file for wrap to pick up
             resp_path = os.path.join(STATE_DIR, STATE_PREFIX + sid + "-response")
             try:
                 with open(resp_path, "w") as f:
                     f.write(response)
             except OSError:
                 pass
-            # Clear permission state on the cat so it doesn't re-queue
             cat = self.cats.get(sid)
             if cat:
                 cat.permission_pending = False
                 cat.permission_tool = ""
                 cat.permission_input = {}
-            _log("[prompt] responded %s for %s (%s)", response, prompt["name"], prompt["tool"])
+                cat.pending_question = None
+            _log("[prompt] responded %s for %s (%s/%s)", response, prompt["name"],
+                 ptype, prompt.get("tool", ""))
             self.prompt_queue.pop(0)
             return sid
         return None
@@ -2164,6 +2303,9 @@ class Litter:
         if all_active:
             out += self._render_status_bar(all_active, now)
 
+        # Prompt widget at top (always visible, expands when active)
+        out += self._render_prompt_widget(now)
+
         if not valid and not unmonitored:
             out += CLRL + "\n"
             out += DIM + "  no active sessions" + RST + CLRL + "\n"
@@ -2184,16 +2326,12 @@ class Litter:
                     term_w = os.get_terminal_size().columns
                 except OSError:
                     term_w = 80
-                # Always show group header
                 header = " " + proj_short + " "
                 pad = max(0, term_w - len(header) - 2)
                 out += fg + DIM + "\u2500\u2500" + RST + fg + BOLD + header + RST + fg + DIM + "\u2500" * pad + RST + CLRL + "\n"
                 for i, (sid, cat) in enumerate(members):
                     out += self._render_cat(cat, now, show_dir=True)
                     out += CLRL + "\n"
-
-        # Permission prompt widget (always rendered for layout stability)
-        out += self._render_prompt_widget(now)
 
         # Graveyard — hide cats that are currently in the active display (alive or dying)
         alive_names = {cat.name for cat in self.cats.values()}
@@ -2237,6 +2375,10 @@ class Litter:
                 cwd_short = os.path.basename((cat.project_dir or cat.cwd or "").rstrip("/"))
                 ago = self._format_ago(now - cat.last_event)
                 out += "  " + DIM + (cat.name or sid[:16]) + "  " + cwd_short + "  " + ago + RST + CLRL + "\n"
+
+        # Controls footer
+        if not self.prompt_queue and not self.input_mode:
+            out += DIM + "  tab=select  m/g/a=mode  enter=input  q=quit" + RST + CLRL + "\n"
 
         out += CLRB
         sys.stdout.write(out)
@@ -2903,8 +3045,10 @@ def litter_mode(sprite_data=None):
                             litter.input_buffer = litter.input_buffer[:-1]
                         elif len(ch) == 1 and ch >= " ":
                             litter.input_buffer += ch
-                    elif litter.prompt_queue and ch in ("y", "Y", "n", "N", "1", "2", "3", "\r", "\n"):
-                        # Permission prompt response
+                    elif litter.prompt_queue and ch in ("y", "Y", "n", "N", "a", "A",
+                                                        "1", "2", "3", "4", "5", "6", "7", "8", "9",
+                                                        "\r", "\n"):
+                        # Prompt response (permission or question)
                         litter.handle_prompt_response(ch)
                     elif ch == "\x1b[A" or ch == "\x1b[Z":  # up arrow or shift-tab
                         litter.cycle_cat(-1)
@@ -2918,11 +3062,7 @@ def litter_mode(sprite_data=None):
                     elif ch in ("g", "G"):
                         litter.toggle_approve_mode("guarded")
                     elif ch in ("a", "A"):
-                        # A: if prompt active -> Always, else toggle automatic mode
-                        if litter.prompt_queue:
-                            litter.handle_prompt_response("a")
-                        else:
-                            litter.toggle_approve_mode("automatic")
+                        litter.toggle_approve_mode("automatic")
                     elif ch in ("c", "C"):
                         # Spread colors: shuffle palette, assign evenly
                         cats = [c for c in litter.cats.values() if not c.dead]
