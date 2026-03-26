@@ -1072,7 +1072,7 @@ class Cat:
             self.state = "idle"
             self.sleeping = False
             self.reaction = "interrupted"
-            self.reaction_end = time.time() + self.reactions.get("interrupted", {}).get("hold", 10.0)
+            self.reaction_end = time.time() + self.reactions.get("interrupted", {}).get("hold", 7.0)
             self.reaction_msg = "interrupted"
             _log("[%s] Interrupted event -> idle/interrupted", sid_short)
         elif ev == "WrapperState":
@@ -1082,7 +1082,7 @@ class Cat:
                 self.state = "idle"
                 self.sleeping = False
                 self.reaction = "interrupted"
-                self.reaction_end = time.time() + self.reactions.get("interrupted", {}).get("hold", 10.0)
+                self.reaction_end = time.time() + self.reactions.get("interrupted", {}).get("hold", 7.0)
                 self.reaction_msg = "interrupted"
             _log("[%s] WrapperState: %s", sid_short, ws)
         elif ev == "Meow":
@@ -1216,7 +1216,7 @@ class Cat:
             if self.state == "thinking" and not self.reaction and quiet > 45:
                 _log("[%s] timeout: thinking -> idle/interrupted (%.0fs quiet)", self.session_id[:8], quiet)
                 self.reaction = "interrupted"
-                self.reaction_end = now + self.reactions.get("interrupted", {}).get("hold", 10.0)
+                self.reaction_end = now + self.reactions.get("interrupted", {}).get("hold", 7.0)
                 self.reaction_msg = "interrupted"
                 self.state = "idle"
                 self.sleeping = False
@@ -1541,13 +1541,12 @@ class Litter:
                             _log("[stdout] %s -> thinking (spinner)", cat.session_id[:8])
                             _trace(cat.session_id, "stdout", "spinner_start", old_s, "thinking")
 
-                # Error detection
+                # Error detection — brief grumpy face, no state change
                 for pat_s in ("API Error", "Rate limit", "Request too large", "Overloaded"):
                     if pat_s in new_text:
                         cat.reaction = "error"
-                        cat.reaction_end = now + 4.0
+                        cat.reaction_end = now + 2.0
                         cat.reaction_msg = pat_s.lower().replace(" ", "_")
-                        cat.last_wrapper_ts = now
                         dirty = True
                         _log("[stdout] %s error: %s", cat.session_id[:8], pat_s)
                         break
