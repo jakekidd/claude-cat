@@ -662,6 +662,8 @@ class Cat:
         self.out_file = os.path.join(STATE_DIR, STATE_PREFIX + session_id + ".out") if session_id else ""
         self.last_out_mtime = 0.0
         self.last_out_content = ""
+        self.last_out_change = 0.0  # when .out content last changed (for idle detection)
+        self.last_spinner_seen = 0.0  # when spinner chars last appeared in stdout
         self.spinner_active = False  # gates duplicate spinner→thinking transitions
         self.thought_seconds = 0
         # Pending question (planning questions with numbered options)
@@ -1214,17 +1216,8 @@ class Cat:
                 self.sleeping = False
                 dirty = True
                 _trace(self.session_id, "timeout", "45s_quiet", "thinking", "idle", quiet=round(quiet, 1))
-        elif active and not self.reaction and quiet > 120:
-            # Wrapped: safety-net timeout (2min). Stop hook is primary, this is backstop
-            # for when Stop event is lost (file overwrite race).
-            old_s = self.state
-            _log("[%s] timeout: %s -> idle (%.0fs quiet, wrapped safety-net)",
-                 self.session_id[:8], self.state, quiet)
-            self.state = "idle"
-            self.spinner_active = False
-            self.sleeping = False
-            dirty = True
-            _trace(self.session_id, "timeout", "120s_wrapped_safety", old_s, "idle", quiet=round(quiet, 1))
+        # Wrapped sessions: idle detection via three-way silence in _match/_apply
+        # (no spinners + no hooks + no stdout changes for 15s). No timeout here.
 
         # idle + 10min => sleeping (visual only, applies to all sessions)
         # Guard: don't sleep if we just set a reaction (e.g. interrupted)
@@ -1531,6 +1524,7 @@ class Litter:
                                 cat.last_out_content = content  # buffer wrapped, skip
                             if new_text is not None:
                                 cat.last_out_content = content
+                                cat.last_out_change = now
                                 out_content = content
                 except (OSError, ValueError):
                     pass
@@ -1568,8 +1562,14 @@ class Litter:
                     m = _THOUGHT_RE.search(g["out_content"][-200:])
                     if m:
                         events.append(("stdout_thought", sid, int(m.group(1))))
-            # No spinner→idle timeout for wrapped sessions.
-            # Stop hook event is the sole path to idle (reliable, no false positives).
+            # Three-way silence → idle (wrapped sessions, backstop for missed Stop)
+            # ALL three must be quiet for 15s: spinners, hooks, stdout content
+            if g["is_wrapped"] and cat.state not in ("idle", "compacting"):
+                spinner_quiet = (now - cat.last_spinner_seen) if cat.last_spinner_seen else 999
+                hook_quiet = now - cat.last_event
+                content_quiet = (now - cat.last_out_change) if cat.last_out_change else 999
+                if spinner_quiet > 15 and hook_quiet > 15 and content_quiet > 15:
+                    events.append(("stdout_idle", sid, None))
         return events
 
     def _apply(self, events, now):
@@ -1589,6 +1589,7 @@ class Litter:
             elif etype == "stdout_spinner":
                 if sid in hook_sids:
                     continue
+                cat.last_spinner_seen = now
                 if not cat.spinner_active:
                     cat.spinner_active = True
                     old_s = cat.state
@@ -1617,6 +1618,29 @@ class Litter:
                     _trace(sid, "stdout", "compacting", old_s, "compacting")
             elif etype == "stdout_thought":
                 cat.thought_seconds = detail
+            elif etype == "stdout_idle":
+                if sid in hook_sids:
+                    continue
+                old_s = cat.state
+                cat.state = "idle"
+                cat.spinner_active = False
+                _log("[stdout] %s -> idle (all signals quiet 15s)", sid[:8])
+                _trace(sid, "stdout", "triple_silence", old_s, "idle",
+                       spinner=round(now - cat.last_spinner_seen, 1) if cat.last_spinner_seen else -1,
+                       hook=round(now - cat.last_event, 1),
+                       content=round(now - cat.last_out_change, 1) if cat.last_out_change else -1)
+                if cat.thought_seconds:
+                    cat.reaction = "happy"
+                    cat.reaction_end = now + 4.0
+                    cat.reaction_msg = "thought %ds" % cat.thought_seconds
+                    cat.thought_seconds = 0
+                else:
+                    cat.reaction = "happy"
+                    cat.reaction_end = now + 4.0
+                    cat.reaction_msg = "done!"
+                cat.overlay = "bulb"
+                cat.overlay_end = now + 3.0
+                dirty = True
         # Run animation timers, timeouts, transcript refresh for all cats
         for cat in self.cats.values():
             if not cat.dead and cat.tick(now):
