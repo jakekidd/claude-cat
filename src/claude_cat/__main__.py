@@ -1512,6 +1512,7 @@ class Litter:
                         with open(cat.out_file) as f:
                             content = f.read()
                         if content != cat.last_out_content:
+                            cat.last_out_change = now  # content changed = active output
                             old_len = len(cat.last_out_content)
                             if old_len and content.startswith(cat.last_out_content[:min(old_len, 256)]):
                                 new_text = content[old_len:]
@@ -1524,7 +1525,6 @@ class Litter:
                                 cat.last_out_content = content  # buffer wrapped, skip
                             if new_text is not None:
                                 cat.last_out_content = content
-                                cat.last_out_change = now
                                 out_content = content
                 except (OSError, ValueError):
                     pass
