@@ -2946,21 +2946,15 @@ def code_mode(child_args):
                 except OSError:
                     pass
 
-            # Heartbeat: touch .out file every 15s so litter knows we're alive
+            # Heartbeat: touch .out file mtime every 15s (litter uses mtime
+            # to know wrapper is alive, but only content changes trigger idle reset)
             if wrap_session_id:
                 _now_hb = time.time()
                 if _now_hb - _heartbeat_ts > 15.0:
                     _heartbeat_ts = _now_hb
                     try:
                         out_path = os.path.join(STATE_DIR, STATE_PREFIX + wrap_session_id + ".out")
-                        if _out_tee_buf:
-                            tmp = out_path + ".tmp"
-                            with open(tmp, "w") as f:
-                                f.write(_out_tee_buf)
-                            os.replace(tmp, out_path)
-                        else:
-                            # No content yet, just touch the file
-                            Path(out_path).touch()
+                        Path(out_path).touch()
                     except OSError:
                         pass
 
