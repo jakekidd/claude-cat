@@ -40,7 +40,7 @@ STDOUT_PATTERNS = [
         ("Request too large", "request_too_large"),
         ("Overloaded", "overloaded"),
     ]),
-    ("compacting", None, re.compile(r"[·✻✽✶✳✢]\s*Compacting conversation")),
+    ("compacting", None, re.compile(r"Compacting conversation")),
 ]
 _THOUGHT_RE = re.compile(r"Thought for (\d+)s")
 
@@ -325,7 +325,9 @@ class Litter:
                 if sid in hook_sids:
                     continue
                 cat.last_spinner_seen = now
-                if cat.state != "thinking":
+                # Only set thinking from idle/sleeping — don't override tool states
+                # (reading/cooking/browsing) set by PostToolUse. Those are ground truth.
+                if cat.state == "idle" or cat.sleeping:
                     old_s = cat.state
                     cat.state = "thinking"
                     cat.sleeping = False

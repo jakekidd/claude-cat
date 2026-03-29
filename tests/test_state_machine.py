@@ -192,8 +192,8 @@ def build_stdout_scenarios():
         ("stdout", "API Error: rate limit exceeded",
          "thinking", "API Error -> error reaction (stays thinking)"),
 
-        # Compacting detection
-        ("stdout", "\u273b Compacting conversation...",
+        # Compacting detection (no spinner prefix required)
+        ("stdout", "Compacting conversation...",
          "compacting", "Compacting pattern -> compacting"),
     ]
 
@@ -338,7 +338,6 @@ def run_headless():
 
         for event_type, data, expected, desc in stdout_scenario:
             if event_type == "stdout":
-                # Simulate stdout by running _match with fake gathered data
                 gathered = {sid4: {
                     "is_wrapped": True,
                     "hook_data": None,
@@ -349,6 +348,59 @@ def run_headless():
                 events = litter._match(gathered, now)
                 litter._apply(events, now)
                 check(cat4.state == expected, desc, cat4)
+
+        # ── Spinner should NOT override tool states ──
+        print("\n--- Spinner vs tool states ---")
+
+        sid4b = "test0000-1111-2222-3333-666666666667"
+        cat4b = Cat(sprite, session_id=sid4b)
+        cat4b.cwd = "/tmp/claude-cat-test"
+        registry.registry_set_wrapped(sid4b)
+        litter2 = Litter(sprite)
+        litter2.cats[sid4b] = cat4b
+        litter2.cat_order.append(sid4b)
+
+        # Set state to reading (as if PostToolUse/Read just fired)
+        cat4b.state = "reading"
+        gathered = {sid4b: {
+            "is_wrapped": True, "hook_data": None,
+            "new_text": "\u273b thinking...", "out_content": "\u273b thinking...",
+        }}
+        now = time.time()
+        events = litter2._match(gathered, now)
+        litter2._apply(events, now)
+        check(cat4b.state == "reading",
+              "spinner does NOT override reading -> thinking", cat4b)
+
+        # Same for cooking
+        cat4b.state = "cooking"
+        events = litter2._match(gathered, now)
+        litter2._apply(events, now)
+        check(cat4b.state == "cooking",
+              "spinner does NOT override cooking -> thinking", cat4b)
+
+        # Same for browsing
+        cat4b.state = "browsing"
+        events = litter2._match(gathered, now)
+        litter2._apply(events, now)
+        check(cat4b.state == "browsing",
+              "spinner does NOT override browsing -> thinking", cat4b)
+
+        # But spinner DOES wake from idle
+        cat4b.state = "idle"
+        events = litter2._match(gathered, now)
+        litter2._apply(events, now)
+        check(cat4b.state == "thinking",
+              "spinner DOES transition idle -> thinking", cat4b)
+
+        # And from sleeping
+        cat4b.state = "idle"
+        cat4b.sleeping = True
+        events = litter2._match(gathered, now)
+        litter2._apply(events, now)
+        check(cat4b.state == "thinking",
+              "spinner DOES wake sleeping -> thinking", cat4b)
+        check(not cat4b.sleeping, "sleeping cleared on wake", cat4b)
 
         # ── Test 4: Thought detection ──
         print("\n--- Thought detection ---")
@@ -446,6 +498,28 @@ def run_headless():
         check(os.path.exists(resp_path), "guarded: in-cwd edit -> auto-approved")
         if os.path.exists(resp_path):
             os.remove(resp_path)
+
+        # Tool state mapping completeness
+        cat7._process_event(hook_e("UserPromptSubmit", sid=sid7))
+        for tool, expected_state in [
+            ("Read", "reading"), ("Grep", "reading"), ("Glob", "reading"),
+            ("ToolSearch", "reading"), ("TaskGet", "reading"), ("TaskList", "reading"),
+            ("Edit", "cooking"), ("Write", "cooking"), ("Bash", "cooking"),
+            ("Skill", "cooking"), ("NotebookEdit", "cooking"),
+            ("WebFetch", "browsing"), ("WebSearch", "browsing"),
+            ("Agent", "thinking"), ("EnterPlanMode", "thinking"),
+            ("ExitPlanMode", "thinking"), ("TaskCreate", "thinking"),
+            ("AskUserQuestion", "thinking"), ("SendMessage", "thinking"),
+        ]:
+            cat7._process_event(hook_e("PostToolUse", tool, sid=sid7))
+            check(cat7.state == expected_state,
+                  "PostToolUse/%s -> %s" % (tool, expected_state), cat7)
+
+        # Unknown tool defaults to cooking
+        cat7._process_event(hook_e("PostToolUse", "SomeNewTool", sid=sid7))
+        check(cat7.state == "cooking", "unknown tool -> cooking (default)", cat7)
+
+        cat7._process_event(hook_e("Stop", sid=sid7))
 
         # Two UserPromptSubmits in a row
         cat7._process_event(hook_e("UserPromptSubmit", sid=sid7))

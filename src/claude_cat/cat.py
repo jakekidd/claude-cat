@@ -27,6 +27,15 @@ TOOL_STATES = {
     "WebSearch": "browsing",
     "Skill": "cooking",
     "NotebookEdit": "cooking",
+    "ToolSearch": "reading",
+    "EnterPlanMode": "thinking",
+    "ExitPlanMode": "thinking",
+    "TaskCreate": "thinking",
+    "TaskUpdate": "thinking",
+    "TaskGet": "reading",
+    "TaskList": "reading",
+    "AskUserQuestion": "thinking",
+    "SendMessage": "thinking",
 }
 
 # Adjacency map for idle gaze drift
