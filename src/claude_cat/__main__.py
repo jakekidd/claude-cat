@@ -434,7 +434,7 @@ STDOUT_PATTERNS = [
         ("Request too large", "request_too_large"),
         ("Overloaded", "overloaded"),
     ]),
-    ("compacting", None, re.compile(r"[·✻✽✶✳✢]\s*Compacting")),
+    ("compacting", None, re.compile(r"[·✻✽✶✳✢]\s*Compacting conversation")),
 ]
 _THOUGHT_RE = re.compile(r"Thought for (\d+)s")
 
@@ -664,7 +664,6 @@ class Cat:
         self.last_out_content = ""
         self.last_out_change = 0.0  # when .out content last changed (for idle detection)
         self.last_spinner_seen = 0.0  # when spinner chars last appeared in stdout
-        self.spinner_active = False  # gates duplicate spinner→thinking transitions
         self.thought_seconds = 0
         # Pending question (planning questions with numbered options)
         self.pending_question = None  # {type, text, options} or None
@@ -985,7 +984,6 @@ class Cat:
             self.next_frame = time.time() + 0.5
         elif ev == "Stop":
             self.state = "idle"
-            self.spinner_active = False
             tp = data.get("transcript_path", "") or self.transcript_path
             if self._check_error_tail(tp):
                 self.reaction = "error"
@@ -1198,26 +1196,6 @@ class Cat:
 
         # ── Timeouts ──
         quiet = now - self.last_event
-        active = self.state not in ("idle", "compacting")
-        is_wrapped = registry_is_wrapped(self.session_id) if self.session_id else False
-
-        if not is_wrapped:
-            # Unwrapped: aggressive timeouts (no stdout signal)
-            if self.state in ("reading", "cooking", "browsing") and not self.reaction and quiet > 15:
-                old_s = self.state
-                _log("[%s] timeout: %s -> thinking (%.0fs quiet)", self.session_id[:8], self.state, quiet)
-                self.state = "thinking"
-                self.frame_idx = 0
-                dirty = True
-                _trace(self.session_id, "timeout", "15s_quiet", old_s, "thinking", quiet=round(quiet, 1))
-            if self.state == "thinking" and not self.reaction and quiet > 45:
-                _log("[%s] timeout: thinking -> idle (%.0fs quiet)", self.session_id[:8], quiet)
-                self.state = "idle"
-                self.sleeping = False
-                dirty = True
-                _trace(self.session_id, "timeout", "45s_quiet", "thinking", "idle", quiet=round(quiet, 1))
-        # Wrapped sessions: idle detection via three-way silence in _match/_apply
-        # (no spinners + no hooks + no stdout changes for 15s). No timeout here.
 
         # idle + 10min => sleeping (visual only, applies to all sessions)
         # Guard: don't sleep if we just set a reaction (e.g. interrupted)
@@ -1259,39 +1237,6 @@ class Cat:
             dirty = True
 
         return dirty
-
-    def render(self):
-        """Full render for target mode."""
-        sprite = self._get_sprite()
-        cat_w = len(sprite[0]) if sprite else 14
-
-        out = HOME + HIDE
-
-        bubble_text = self.reaction_msg or ""
-        if bubble_text:
-            inner = " " + bubble_text + " "
-            horiz = "\u2500" * len(inner)
-            pad = " " * max(0, (cat_w - len(inner) - 2) // 2)
-            out += pad + DIM + "\u256d" + horiz + "\u256e" + RST + CLRL + "\n"
-            out += pad + DIM + "\u2502" + RST + inner + DIM + "\u2502" + RST + CLRL + "\n"
-            out += pad + DIM + "\u2570" + horiz + "\u256f" + RST + CLRL + "\n"
-        else:
-            out += CLRL + "\n" + CLRL + "\n" + CLRL + "\n"
-
-        for line in sprite:
-            out += render_hex_line(line, color=self.color) + CLRL + "\n"
-
-        if self.overlay and self.overlay in OVERLAYS:
-            ov = OVERLAYS[self.overlay]
-            for i, art_line in enumerate(ov["art"]):
-                r = 3 + i
-                c = cat_w + 1
-                if r > 0:
-                    out += CSI + "%d;%dH" % (r, c) + BOLD + art_line + RST
-
-        out += CLRL + "\n" + DIM + self.state + RST + CLRL + "\n" + CLRB
-        sys.stdout.write(out)
-        sys.stdout.flush()
 
 
 # ── Litter ───────────────────────────────────────────────────────────
@@ -1590,16 +1535,14 @@ class Litter:
                 if sid in hook_sids:
                     continue
                 cat.last_spinner_seen = now
-                if not cat.spinner_active:
-                    cat.spinner_active = True
+                if cat.state != "thinking":
                     old_s = cat.state
-                    if cat.state != "thinking":
-                        cat.state = "thinking"
-                        cat.sleeping = False
-                        cat.frame_idx = 0
-                        dirty = True
-                        _log("[stdout] %s -> thinking (spinner)", sid[:8])
-                        _trace(sid, "stdout", "spinner_start", old_s, "thinking")
+                    cat.state = "thinking"
+                    cat.sleeping = False
+                    cat.frame_idx = 0
+                    dirty = True
+                    _log("[stdout] %s -> thinking (spinner)", sid[:8])
+                    _trace(sid, "stdout", "spinner_start", old_s, "thinking")
             elif etype == "stdout_error":
                 cat.reaction = "error"
                 cat.reaction_end = now + 2.0
@@ -1623,7 +1566,6 @@ class Litter:
                     continue
                 old_s = cat.state
                 cat.state = "idle"
-                cat.spinner_active = False
                 _log("[stdout] %s -> idle (all signals quiet 15s)", sid[:8])
                 _trace(sid, "stdout", "triple_silence", old_s, "idle",
                        spinner=round(now - cat.last_spinner_seen, 1) if cat.last_spinner_seen else -1,
@@ -3120,18 +3062,25 @@ def demo_mode(sprite_data=None):
         sys.stdout.write(SHOW + "\n")
         sys.stdout.flush()
         sys.exit(0)
+    def render_demo(label):
+        sprite = cat._get_sprite()
+        out = HOME + HIDE
+        out += CLRL + "\n" + CLRL + "\n" + CLRL + "\n"
+        for line in sprite:
+            out += render_hex_line(line, color=cat.color) + CLRL + "\n"
+        out += CLRL + "\n" + DIM + label + RST + CLRL + "\n" + CLRB
+        sys.stdout.write(out)
+        sys.stdout.flush()
     signal.signal(signal.SIGINT, cleanup)
     for s in all_states:
         cat.state = s
         cat.reaction = None
-        cat.bubble = s
         cat.frame_idx = 0
-        cat.render()
+        render_demo(s)
         time.sleep(1.5)
     for r in all_reactions:
         cat.reaction = r
-        cat.bubble = r
-        cat.render()
+        render_demo(r)
         time.sleep(1.5)
     cleanup()
 
