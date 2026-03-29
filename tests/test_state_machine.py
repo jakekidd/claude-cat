@@ -221,6 +221,12 @@ def run_headless():
             errors.append(desc + state_info)
             print("  FAIL  %s%s" % (desc, state_info))
 
+    def hook_e(event, tool="", sid="", **extra):
+        d = {"event": event, "tool": tool, "ts": 0, "session_id": sid,
+             "cwd": "/tmp/claude-cat-test", "transcript_path": ""}
+        d.update(extra)
+        return d
+
     # ── Test 1: Cat state machine (direct, no files) ──
     print("\n--- Cat state machine ---")
 
@@ -372,6 +378,135 @@ def run_headless():
         cat6.last_event = time.time() - 700  # 700s ago (> 600s threshold)
         cat6.tick(time.time())
         check(cat6.sleeping, "idle + 700s -> sleeping")
+
+        # ── Test 7: Edge cases ──
+        print("\n--- Edge cases ---")
+
+        sid7 = "test0000-1111-2222-3333-aaaaaaaaaaaa"
+        cat7 = Cat(sprite, session_id=sid7)
+        cat7.cwd = "/tmp/claude-cat-test"
+
+        # SubagentStop without SubagentStart — depth shouldn't go negative
+        cat7._process_event(hook_e("SubagentStop", sid=sid7))
+        check(cat7.subagent_depth == 0, "SubagentStop without Start: depth stays 0")
+
+        # Double SubagentStart
+        cat7._process_event(hook_e("SubagentStart", sid=sid7))
+        cat7._process_event(hook_e("SubagentStart", sid=sid7))
+        check(cat7.subagent_depth == 2, "double SubagentStart: depth=2")
+
+        # SubagentStop back to 1
+        cat7._process_event(hook_e("SubagentStop", sid=sid7))
+        check(cat7.subagent_depth == 1, "SubagentStop: depth=1")
+
+        # Stop resets to idle regardless of subagent depth
+        cat7._process_event(hook_e("Stop", sid=sid7))
+        check(cat7.state == "idle", "Stop while depth=1: still goes idle")
+
+        # UserPromptSubmit resets subagent depth
+        cat7._process_event(hook_e("UserPromptSubmit", sid=sid7))
+        check(cat7.subagent_depth == 0, "UserPromptSubmit resets depth to 0")
+
+        # Stop while compacting
+        cat7._process_event(hook_e("PreCompact", sid=sid7))
+        check(cat7.state == "compacting", "PreCompact -> compacting")
+        cat7._process_event(hook_e("Stop", sid=sid7))
+        check(cat7.state == "idle", "Stop while compacting -> idle")
+
+        # Permission during subagent in manual mode (should be silently skipped)
+        registry.registry_set_approve_mode(sid7, "manual")
+        cat7._process_event(hook_e("UserPromptSubmit", sid=sid7))
+        cat7._process_event(hook_e("SubagentStart", sid=sid7))
+        cat7._process_event(hook_e("PermissionRequest", "Bash", sid=sid7,
+                                   tool_input={"command": "echo hi"}))
+        check(not cat7.permission_pending, "subagent perm in manual: silently skipped")
+        check(cat7.subagent_depth == 1, "subagent depth still 1")
+
+        # But auto-approve still fires for subagent permissions
+        registry.registry_set_approve_mode(sid7, "automatic")
+        cat7._process_event(hook_e("PermissionRequest", "Bash", sid=sid7,
+                                   tool_input={"command": "echo hi"}))
+        resp_path = os.path.join(tmpdir, shared.STATE_PREFIX + sid7 + "-response")
+        check(os.path.exists(resp_path), "automatic mode: subagent perm auto-approved")
+        if os.path.exists(resp_path):
+            os.remove(resp_path)
+
+        # Guarded mode: path outside cwd should NOT be approved
+        registry.registry_set_approve_mode(sid7, "guarded")
+        cat7.subagent_depth = 0  # reset for clean test
+        cat7._process_event(hook_e("PermissionRequest", "Edit", sid=sid7,
+                                   tool_input={"file_path": "/etc/passwd"}))
+        check(cat7.permission_pending, "guarded: /etc/passwd edit -> perm pending")
+
+        # Guarded mode: path inside cwd should be approved
+        cat7.permission_pending = False
+        cat7._process_event(hook_e("PermissionRequest", "Edit", sid=sid7,
+                                   tool_input={"file_path": "/tmp/claude-cat-test/foo.py"}))
+        resp_path = os.path.join(tmpdir, shared.STATE_PREFIX + sid7 + "-response")
+        check(os.path.exists(resp_path), "guarded: in-cwd edit -> auto-approved")
+        if os.path.exists(resp_path):
+            os.remove(resp_path)
+
+        # Two UserPromptSubmits in a row
+        cat7._process_event(hook_e("UserPromptSubmit", sid=sid7))
+        check(cat7.state == "thinking", "first prompt -> thinking")
+        cat7._process_event(hook_e("UserPromptSubmit", sid=sid7))
+        check(cat7.state == "thinking", "second prompt -> still thinking")
+        check(cat7.subagent_depth == 0, "second prompt resets depth")
+
+        # Sleep prevents sleeping again
+        cat7._process_event(hook_e("Stop", sid=sid7))
+        cat7.sleeping = True
+        cat7.last_event = time.time() - 700
+        old_sleeping = cat7.sleeping
+        cat7.tick(time.time())
+        check(cat7.sleeping, "already sleeping + 700s: stays sleeping")
+
+        # Wake from sleep on UserPromptSubmit
+        cat7._process_event(hook_e("UserPromptSubmit", sid=sid7))
+        check(not cat7.sleeping, "UserPromptSubmit wakes from sleep")
+        check(cat7.reaction == "surprised", "wake from sleep -> surprised reaction")
+
+        # ── Test 8: Triple silence detection ──
+        print("\n--- Triple silence ---")
+        from claude_cat.litter import Litter
+
+        sid8 = "test0000-1111-2222-3333-bbbbbbbbbbbb"
+        cat8 = Cat(sprite, session_id=sid8)
+        cat8.cwd = "/tmp/claude-cat-test"
+        cat8.state = "thinking"
+        cat8.last_spinner_seen = time.time() - 20  # 20s ago
+        cat8.last_event = time.time() - 20          # 20s ago
+        cat8.last_out_change = time.time() - 20     # 20s ago
+        registry.registry_set_wrapped(sid8)
+
+        lit = Litter(sprite)
+        lit.cats[sid8] = cat8
+        lit.cat_order.append(sid8)
+
+        # All three quiet > 15s → should fire stdout_idle
+        gathered = {sid8: {"is_wrapped": True, "hook_data": None,
+                           "new_text": None, "out_content": None}}
+        events = lit._match(gathered, time.time())
+        lit._apply(events, time.time())
+        check(cat8.state == "idle", "triple silence (20s all quiet) -> idle")
+        check(cat8.reaction == "happy", "triple silence -> happy reaction")
+
+        # Reset: if any signal is fresh, should NOT fire
+        cat8.state = "cooking"
+        cat8.last_spinner_seen = time.time() - 20
+        cat8.last_event = time.time() - 5  # only 5s ago (< 15s)
+        cat8.last_out_change = time.time() - 20
+        events = lit._match(gathered, time.time())
+        idle_events = [e for e in events if e[0] == "stdout_idle"]
+        check(len(idle_events) == 0, "hook 5s ago: triple silence does NOT fire")
+
+        # Content change fresh → no idle
+        cat8.last_event = time.time() - 20
+        cat8.last_out_change = time.time() - 3  # 3s ago
+        events = lit._match(gathered, time.time())
+        idle_events = [e for e in events if e[0] == "stdout_idle"]
+        check(len(idle_events) == 0, "content 3s ago: triple silence does NOT fire")
 
         # Restore
         shared.STATE_DIR = old_state_dir
