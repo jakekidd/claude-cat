@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import random
+import re
 import shlex
 import time
 from pathlib import Path
@@ -272,12 +273,18 @@ def registry_flush_force():
 
 # ── Guarded mode ─────────────────────────────────────────────────────
 
-GUARDED_BLACKLIST = (
-    "rm -rf", "rm -r /", "kill ", "pkill ", "killall ",
-    "git push --force", "git push -f", "git reset --hard",
-    "chmod ", "chown ", "curl ", "wget ",
-    "sudo ", "su ", "eval ", "> /dev/",
-)
+GUARDED_BLACKLIST = [
+    re.compile(r"\brm\s+-(r|rf|fr)\b"),
+    re.compile(r"\brm\s.*\s/"),
+    re.compile(r"\b(kill|pkill|killall)\b"),
+    re.compile(r"\bgit\s+push\s+(-f|--force)\b"),
+    re.compile(r"\bgit\s+reset\s+--hard\b"),
+    re.compile(r"\b(chmod|chown)\b"),
+    re.compile(r"\b(curl|wget)\b"),
+    re.compile(r"\b(sudo|su)\b"),
+    re.compile(r"\beval\b"),
+    re.compile(r">\s*/dev/"),
+]
 
 
 def _is_guarded_safe(tool, tool_input, cwd):
@@ -288,7 +295,7 @@ def _is_guarded_safe(tool, tool_input, cwd):
         cmd = tool_input.get("command", "")
         # Check blacklist
         for pat in GUARDED_BLACKLIST:
-            if pat in cmd:
+            if pat.search(cmd):
                 return False
         # Check if command references paths outside cwd
         try:

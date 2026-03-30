@@ -351,13 +351,24 @@ class Cat:
         except Exception:
             pass
 
+    # (input $/M, output $/M, cache_read $/M)
+    MODEL_PRICING = {
+        "opus":   (15.0, 75.0, 1.50),
+        "sonnet": (3.0,  15.0, 0.30),
+        "haiku":  (0.80, 4.0,  0.08),
+    }
+
     def est_cost(self):
-        """Rough cost estimate using Opus pricing."""
-        # input $15/M, output $75/M, cache read $1.5/M
+        """Rough cost estimate based on detected model."""
+        inp, out, cache = self.MODEL_PRICING["opus"]  # default
+        for key, rates in self.MODEL_PRICING.items():
+            if key in self.model:
+                inp, out, cache = rates
+                break
         return (
-            self.total_input * 15 / 1_000_000
-            + self.total_output * 75 / 1_000_000
-            + self.total_cache * 1.5 / 1_000_000
+            self.total_input * inp / 1_000_000
+            + self.total_output * out / 1_000_000
+            + self.total_cache * cache / 1_000_000
         )
 
     @staticmethod

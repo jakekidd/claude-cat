@@ -10,10 +10,8 @@ import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import sprites as sprites_mod
-
-VERSION = "0.3.0"
+from . import sprites as sprites_mod
+from . import __version__ as VERSION
 
 from .shared import (
     CSI, HIDE, SHOW, CLR, CLRL, CLRB, BOLD, DIM, RST, HOME,
@@ -109,8 +107,11 @@ def hook_mode():
         os.makedirs(STATE_DIR, exist_ok=True)
         with open(state_path, "w") as f:
             json.dump(state, f)
-    except Exception:
-        pass
+    except Exception as e:
+        try:
+            sys.stderr.write("claude-cat hook error: %s\n" % e)
+        except Exception:
+            pass
     sys.exit(0)
 
 
@@ -265,6 +266,9 @@ def print_help():
 # ── Main entry ───────────────────────────────────────────────────────
 
 def main():
+    if sys.platform == "win32":
+        print("claude-cat requires a Unix-like environment (macOS or Linux).")
+        sys.exit(1)
     args = sys.argv[1:]
     sprite_name = None
     filtered = []
