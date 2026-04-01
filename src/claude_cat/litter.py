@@ -12,7 +12,7 @@ import time
 from .shared import (
     CSI, HIDE, SHOW, CLR, CLRL, CLRB, BOLD, DIM, RST, HOME,
     STATE_DIR, STATE_PREFIX,
-    find_session_files, project_dir_from_transcript, render_hex_line,
+    state_file_for, find_session_files, project_dir_from_transcript, render_hex_line,
 )
 from .log import (
     _log, _trace, _init_logging, _close_logging, _register_cat_log, cat_last_log,
@@ -23,7 +23,9 @@ from .registry import (
     _load_registry, _load_graveyard, _save_graveyard,
     registry_lookup, registry_touch, registry_is_wrapped,
     registry_get_approve_mode, registry_set_approve_mode,
-    registry_set_color, registry_flush, registry_flush_force,
+    registry_set_color, registry_set_cat_id, registry_set_wrapped,
+    registry_find_by_cat_id, registry_rebind_cat,
+    registry_flush, registry_flush_force,
     _registry,
 )
 from .cat import Cat, TOOL_STATES
@@ -53,6 +55,7 @@ class Litter:
         self.sprite_data = sprite_data
         self.cats = {}
         self.cat_order = []
+        self.cat_id_map = {}  # cat_id -> session_id (for rebinding on /clear)
         self.graveyard = _load_graveyard()
         self.prompt_queue = []  # [{session_id, name, color, tool, input, ts}]
         # Cat selector state
@@ -82,12 +85,79 @@ class Litter:
                         pass
                     continue
 
-                cat = Cat(self.sprite_data, session_id=sid)
-                cat.state_file = path
-                _register_cat_log(sid)
+                # Check if this session belongs to an existing cat (same cat_id)
                 try:
                     with open(path) as f:
-                        data = json.loads(f.read())
+                        peek_data = json.loads(f.read())
+                except (OSError, json.JSONDecodeError):
+                    peek_data = {}
+                file_cat_id = peek_data.get("cat_id", "")
+
+                # Rebind: same cat_id, different session_id -> adopt into existing cat
+                if file_cat_id and file_cat_id in self.cat_id_map:
+                    old_sid = self.cat_id_map[file_cat_id]
+                    if old_sid in self.cats and old_sid != sid:
+                        old_cat = self.cats[old_sid]
+                        _log("[rebind] cat_id=%s: %s -> %s (name=%s)",
+                             file_cat_id[:8], old_sid[:8], sid[:8], old_cat.name)
+                        # Move cat to new session_id
+                        old_cat.session_id = sid
+                        old_cat.state_file = path
+                        old_cat.out_file = os.path.join(STATE_DIR, STATE_PREFIX + sid + ".out")
+                        old_cat.dead = False
+                        old_cat.dead_since = None
+                        old_cat.death_reason = ""
+                        old_cat.sleeping = False
+                        old_cat.state = "thinking"
+                        old_cat.reaction = "surprised"
+                        old_cat.reaction_end = now + 2.0
+                        old_cat.reaction_msg = "new session"
+                        old_cat.cwd = peek_data.get("cwd", old_cat.cwd)
+                        tp = peek_data.get("transcript_path", "")
+                        if tp:
+                            old_cat.transcript_path = tp
+                            old_cat.project_dir = project_dir_from_transcript(tp)
+                        # Update bookkeeping
+                        del self.cats[old_sid]
+                        self.cats[sid] = old_cat
+                        idx = self.cat_order.index(old_sid) if old_sid in self.cat_order else -1
+                        if idx >= 0:
+                            self.cat_order[idx] = sid
+                        else:
+                            self.cat_order.append(sid)
+                        self.cat_id_map[file_cat_id] = sid
+                        _register_cat_log(sid)
+                        registry_rebind_cat(old_sid, sid, file_cat_id)
+                        registry_flush_force()
+                        # Clean up old state file
+                        old_path = state_file_for(old_sid)
+                        try:
+                            if os.path.exists(old_path):
+                                os.remove(old_path)
+                        except OSError:
+                            pass
+                        seen.add(sid)
+                        continue
+
+                cat = Cat(self.sprite_data, session_id=sid)
+                cat.state_file = path
+                if file_cat_id:
+                    cat.cat_id = file_cat_id
+                    self.cat_id_map[file_cat_id] = sid
+                    # Inherit name/color/wrapped from registry if cat_id is known
+                    old_reg_sid, old_reg_entry = registry_find_by_cat_id(file_cat_id)
+                    if old_reg_entry:
+                        cat.name = old_reg_entry.get("name", cat.name)
+                        cat.color = old_reg_entry.get("color", cat.color)
+                        if old_reg_sid and old_reg_sid != sid:
+                            registry_rebind_cat(old_reg_sid, sid, file_cat_id)
+                        else:
+                            registry_set_cat_id(sid, file_cat_id)
+                            registry_set_wrapped(sid)
+                        registry_flush_force()
+                _register_cat_log(sid)
+                try:
+                    data = peek_data
                     cat.cwd = data.get("cwd", "")
                     cat.last_mtime = os.path.getmtime(path)
                     cat.last_event = os.path.getmtime(path)
@@ -228,7 +298,7 @@ class Litter:
                 result[sid] = {"is_wrapped": False, "hook_data": None,
                                "new_text": None, "out_content": None}
                 continue
-            is_wrapped = registry_is_wrapped(cat.session_id) if cat.session_id else False
+            is_wrapped = bool(cat.cat_id) or (registry_is_wrapped(cat.session_id) if cat.session_id else False)
             hook_data = None
             try:
                 mtime = os.path.getmtime(cat.state_file)
@@ -318,6 +388,11 @@ class Litter:
             if etype == "hook":
                 hook_sids.add(sid)
                 cat.cwd = detail.get("cwd") or cat.cwd
+                # Track cat_id from hook data
+                hk_cat_id = detail.get("cat_id", "")
+                if hk_cat_id and not cat.cat_id:
+                    cat.cat_id = hk_cat_id
+                    self.cat_id_map[hk_cat_id] = sid
                 _log("[tick] processing event for %s", sid[:8])
                 cat._process_event(detail)
                 dirty = True
@@ -927,10 +1002,10 @@ class Litter:
             self._term_w = 80
         valid = [(sid, self.cats[sid]) for sid in self.cat_order
                  if sid in self.cats and self.cats[sid].cwd
-                 and registry_is_wrapped(sid)]
+                 and (self.cats[sid].cat_id or registry_is_wrapped(sid))]
         unmonitored = [(sid, self.cats[sid]) for sid in self.cat_order
                        if sid in self.cats and self.cats[sid].cwd and not self.cats[sid].dead
-                       and not registry_is_wrapped(sid)]
+                       and not self.cats[sid].cat_id and not registry_is_wrapped(sid)]
         all_active = valid + unmonitored
         if all_active:
             out += self._render_status_bar(all_active, now)

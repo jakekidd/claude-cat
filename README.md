@@ -1,5 +1,7 @@
 # claude-cat
 
+Not to be confused with [cat(1)](https://man7.org/linux/man-pages/man1/cat.1.html).
+
 > Too many Claudes in the kitchen? Keep tabs on your litter.
 
 A 1-bit pixel art cat companion for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) that curls up in your terminal and reacts to what your AI is doing in real time.

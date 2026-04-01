@@ -101,6 +101,9 @@ def hook_mode():
             "cwd": data.get("cwd", ""),
             "transcript_path": data.get("transcript_path", ""),
         }
+        cat_id = os.environ.get("CLAUDE_CAT_ID", "")
+        if cat_id:
+            state["cat_id"] = cat_id
         tool_input = data.get("tool_input")
         if tool_input and data.get("hook_event_name") == "PermissionRequest":
             state["tool_input"] = tool_input

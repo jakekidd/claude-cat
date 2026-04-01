@@ -6,11 +6,13 @@ import re
 import signal
 import sys
 import time
+import uuid
 from pathlib import Path
 
 from .shared import STATE_DIR, STATE_PREFIX, state_file_for, find_session_files
 from .registry import (
     _load_registry, registry_lookup, registry_set_wrapped, registry_set_name,
+    registry_set_cat_id, registry_find_by_cat_id, registry_rebind_cat,
     registry_flush_force, is_generated_name, _random_cat_name, _NAME_ADJ, _NAME_NOUN,
 )
 
@@ -265,6 +267,10 @@ def code_mode(child_args):
             pass
     signal.signal(signal.SIGWINCH, handle_winch)
 
+    # Generate stable cat_id for this wrapper instance
+    cat_id = str(uuid.uuid4())
+    os.environ["CLAUDE_CAT_ID"] = cat_id
+
     wrap_session_id = None
     wrap_session_name = None
     for i, arg in enumerate(child_args):
@@ -281,9 +287,24 @@ def code_mode(child_args):
     if wrap_session_id:
         registry_lookup(wrap_session_id)
         registry_set_wrapped(wrap_session_id)
+        registry_set_cat_id(wrap_session_id, cat_id)
         if wrap_session_name:
             registry_set_name(wrap_session_id, wrap_session_name)
         registry_flush_force()
+
+    # Write .catid registration file so litter discovers us before hooks fire
+    catid_path = os.path.join(STATE_DIR, STATE_PREFIX + cat_id + ".catid")
+    try:
+        os.makedirs(STATE_DIR, exist_ok=True)
+        with open(catid_path, "w") as f:
+            json.dump({
+                "cat_id": cat_id,
+                "name": wrap_session_name or "",
+                "pid": os.getpid(),
+                "started_at": time.time(),
+            }, f)
+    except OSError:
+        pass
 
     tty.setraw(stdin_fd)
 
@@ -348,18 +369,40 @@ def code_mode(child_args):
                 except OSError:
                     break
 
-            if not wrap_session_id:
-                current = set(find_session_files())
-                new_files = current - existing_files
-                if new_files:
-                    newest = max(new_files, key=lambda f: os.path.getmtime(f))
-                    bn = os.path.basename(newest)
-                    wrap_session_id = bn[len(STATE_PREFIX):-len(".json")]
-                    registry_lookup(wrap_session_id)
-                    registry_set_wrapped(wrap_session_id)
-                    if wrap_session_name:
-                        registry_set_name(wrap_session_id, wrap_session_name)
-                        registry_flush_force()
+            # Session discovery: find new state files with our cat_id
+            current = set(find_session_files())
+            new_files = current - existing_files
+            if new_files:
+                for nf in sorted(new_files, key=lambda f: os.path.getmtime(f), reverse=True):
+                    try:
+                        with open(nf) as _sf:
+                            sf_data = json.loads(_sf.read())
+                        if sf_data.get("cat_id") == cat_id:
+                            bn = os.path.basename(nf)
+                            new_sid = bn[len(STATE_PREFIX):-len(".json")]
+                            if new_sid != wrap_session_id:
+                                old_sid = wrap_session_id
+                                wrap_session_id = new_sid
+                                # Clean up old .out file
+                                if old_sid:
+                                    try:
+                                        old_out = os.path.join(STATE_DIR, STATE_PREFIX + old_sid + ".out")
+                                        if os.path.exists(old_out):
+                                            os.remove(old_out)
+                                    except OSError:
+                                        pass
+                                    registry_rebind_cat(old_sid, new_sid, cat_id)
+                                else:
+                                    registry_lookup(new_sid)
+                                    registry_set_wrapped(new_sid)
+                                    registry_set_cat_id(new_sid, cat_id)
+                                    if wrap_session_name:
+                                        registry_set_name(new_sid, wrap_session_name)
+                                registry_flush_force()
+                            break
+                    except (OSError, json.JSONDecodeError):
+                        continue
+                existing_files = current
 
             if wrap_session_id:
                 resp_path = os.path.join(STATE_DIR, STATE_PREFIX + wrap_session_id + "-response")
@@ -420,6 +463,12 @@ def code_mode(child_args):
                     os.remove(out_path)
             except OSError:
                 pass
+        # Clean up .catid registration file
+        try:
+            if os.path.exists(catid_path):
+                os.remove(catid_path)
+        except OSError:
+            pass
 
     try:
         if os.WIFEXITED(status):

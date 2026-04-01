@@ -215,6 +215,37 @@ def registry_is_wrapped(session_id):
     return entry.get("wrapped", False)
 
 
+def registry_set_cat_id(session_id, cat_id):
+    """Associate a cat_id (wrapper identity) with a session."""
+    global _registry_dirty
+    if session_id in _registry:
+        _registry[session_id]["cat_id"] = cat_id
+        _registry_dirty = True
+
+
+def registry_find_by_cat_id(cat_id):
+    """Find registry entry by cat_id. Returns (session_id, entry) or (None, None)."""
+    for sid, entry in _registry.items():
+        if entry.get("cat_id") == cat_id:
+            return sid, entry
+    return None, None
+
+
+def registry_rebind_cat(old_sid, new_sid, cat_id):
+    """Move a cat's registry entry from old session_id to new session_id.
+    Preserves name, color, approve_mode, wrapped flag, cat_id."""
+    global _registry, _registry_dirty
+    old_entry = _registry.pop(old_sid, None)
+    if old_entry:
+        old_entry["last_seen"] = time.time()
+        _registry[new_sid] = old_entry
+    elif new_sid not in _registry:
+        name, color = registry_lookup(new_sid)
+        _registry[new_sid]["cat_id"] = cat_id
+        _registry[new_sid]["wrapped"] = True
+    _registry_dirty = True
+
+
 def registry_get_approve_mode(session_id):
     """Get approve mode for a session: 'manual' (default), 'guarded', or 'automatic'."""
     entry = _registry.get(session_id, {})

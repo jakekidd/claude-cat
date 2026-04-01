@@ -98,6 +98,7 @@ class Cat:
         else:
             self.states = {}
             self.reactions = {}
+        self.cat_id = ""  # stable wrapper identity (survives /clear)
         self.session_id = session_id or ""
         if session_id:
             reg_name, reg_color = registry_lookup(session_id)
