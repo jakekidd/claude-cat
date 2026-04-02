@@ -19,7 +19,7 @@ claude-cat install
 
 ## Usage
 
-### clat code -- launch Claude Code sessions
+### `clat code` -- launch Claude Code sessions
 
 The primary way to work with Claude Code through claude-cat:
 
@@ -38,7 +38,7 @@ On first run, you'll see a session selector:
 
 Arrow keys to navigate, Enter to select. Picking `(new)` prompts for a session name (with a random cat name as default). Sessions are stored in a local registry and auto-resume by name.
 
-### clat -- monitor all sessions
+### `clat` -- monitor all sessions
 
 Run in a side terminal (tmux split, separate tab, etc.):
 
@@ -107,17 +107,19 @@ Brief face flashes from events. The cat holds the expression, then goes back to 
 
 1. `clat install` adds hooks to Claude Code settings
 2. Hooks fire on tool use, prompts, errors, and completion
-3. Hook mode writes a session-specific state file to the OS temp directory
-4. The litter process scans for session files and renders a cat for each
+3. Hook writes a session-specific state file to `~/.claude-cat/state/`
+4. The litter process scans state files and renders a cat for each
 5. Each cat independently animates, blinks, and reacts to its session's events
-6. `clat code` wraps Claude Code in a PTY for bidirectional control (permission responses)
+6. `clat code` wraps Claude Code in a PTY for bidirectional control (permission responses, auto-approve)
+7. Cats are identified by a stable wrapper ID, so `/clear` and session restarts don't lose your cat
 
 ### Local data
 
 Session data is stored in `~/.claude-cat/`:
-- `registry.json` -- session identity (name, color, stats) keyed by session ID. Pruned after 30 days.
-- `graveyard.json` -- top 5 sessions by total tokens (persistent leaderboard).
-- `logs/` -- per-session and combined litter logs. Rotated at 1MB.
+- `registry.json` -- cat identity (name, color, approve mode, stats). Pruned after 30 days of inactivity.
+- `graveyard.json` -- top 5 cats by total tokens (persistent leaderboard).
+- `state/` -- ephemeral state files and `.out` tee files for active sessions.
+- `logs/` -- per-cat and combined litter logs. Rotated at 1MB.
 
 ## Custom sprites
 
@@ -151,7 +153,7 @@ python3 view-sprite.py                       # quick preview
 python3 -m pip install -e .                  # editable install
 ```
 
-Zero dependencies. Runs on Python 3.9+.
+Zero dependencies. Python 3.9+. macOS and Linux only.
 
 ## Uninstall
 
