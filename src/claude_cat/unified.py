@@ -228,19 +228,24 @@ class UnifiedMode:
         if not mc or not mc.alive:
             return
 
+        old_active = self.active_cat_id
         self.active_cat_id = cat_id
 
-        # Clear the scroll region and replay buffer
+        # Clear scroll region and position cursor at top
         sys.stdout.write(CSI + "1;1H" + CSI + "J")
+        sys.stdout.flush()
+
+        # Replay buffered output if available
         if mc.replay_buf:
             os.write(self.stdout_fd, mc.replay_buf)
 
-        # Send SIGWINCH to force Claude Code to redraw
+        # Send SIGWINCH to force Claude Code to redraw its full screen
         try:
             os.kill(mc.child_pid, signal.SIGWINCH)
         except OSError:
             pass
 
+        self.dashboard_dirty = True
         _log("[unified] switched to cat %s (%s)", cat_id[:8], mc.name)
 
     def _cycle_cat(self, direction=1):
