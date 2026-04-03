@@ -91,13 +91,14 @@ OVERLAYS = {
 
 
 class Cat:
-    def __init__(self, sprite_data=None, session_id=None, color=None):
+    def __init__(self, sprite_data=None, session_id=None, color=None, approve_callback=None):
         if sprite_data and isinstance(sprite_data, dict) and "states" in sprite_data:
             self.states = sprite_data["states"]
             self.reactions = sprite_data.get("reactions", {})
         else:
             self.states = {}
             self.reactions = {}
+        self.approve_callback = approve_callback  # called with (session_id) to approve
         self.cat_id = ""  # stable wrapper identity (survives /clear)
         self.session_id = session_id or ""
         if session_id:
@@ -352,6 +353,18 @@ class Cat:
         except Exception:
             pass
 
+    def _send_approve(self, sid_short=""):
+        """Send approval via callback (unified mode) or response file (litter mode)."""
+        if self.approve_callback:
+            self.approve_callback(self.session_id)
+        else:
+            try:
+                resp_path = os.path.join(STATE_DIR, STATE_PREFIX + self.session_id + "-response")
+                with open(resp_path, "w") as f:
+                    f.write("1")
+            except OSError:
+                pass
+
     # (input $/M, output $/M, cache_read $/M)
     MODEL_PRICING = {
         "opus":   (15.0, 75.0, 1.50),
@@ -486,21 +499,11 @@ class Cat:
             else:
                 mode = registry_get_approve_mode(self.session_id)
                 if mode == "automatic":
-                    try:
-                        resp_path = os.path.join(STATE_DIR, STATE_PREFIX + self.session_id + "-response")
-                        with open(resp_path, "w") as f:
-                            f.write("1")
-                    except OSError:
-                        pass
+                    self._send_approve(sid_short)
                     _log("[%s] auto-approved (automatic mode) tool=%s depth=%d",
                          sid_short, tool, self.subagent_depth)
                 elif mode == "guarded" and _is_guarded_safe(tool, data.get("tool_input", {}), self.cwd):
-                    try:
-                        resp_path = os.path.join(STATE_DIR, STATE_PREFIX + self.session_id + "-response")
-                        with open(resp_path, "w") as f:
-                            f.write("1")
-                    except OSError:
-                        pass
+                    self._send_approve(sid_short)
                     _log("[%s] guarded-approved tool=%s depth=%d", sid_short, tool, self.subagent_depth)
                 elif self.subagent_depth > 0:
                     _log("[%s] subagent permission (depth=%d) tool=%s — skipping prompt",

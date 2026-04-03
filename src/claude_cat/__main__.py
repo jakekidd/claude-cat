@@ -443,9 +443,12 @@ def main():
         print_help()
     elif cmd in ("--version", "-v"):
         print(VERSION)
-    elif cmd in ("", "--watch", "watch"):
+    elif cmd in ("--watch", "watch"):
         from .litter import litter_mode
         litter_mode(sprite_data)
+    elif cmd == "":
+        from .unified import unified_mode
+        unified_mode(sprite_data)
     else:
         print("Unknown command: %s" % cmd)
         print_help()
