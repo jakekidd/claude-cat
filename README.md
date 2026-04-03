@@ -11,8 +11,8 @@ A 1-bit pixel art cat companion for [Claude Code](https://docs.anthropic.com/en/
 ## Install
 
 ```bash
-python3 -m pip install claude-cat
-claude-cat install
+pip install claude-cat
+clat install
 ```
 
 `install` adds [hooks](https://docs.anthropic.com/en/docs/claude-code/hooks) to `~/.claude/settings.json` so Claude Code sends events to the cat. Also available as `clat`.
@@ -53,7 +53,7 @@ Features:
 - Per-cat burn rate on project line
 - State indicator dots (green = working, orange = needs help, red = idle)
 - Permission prompt widget (Y/A/N to respond from litter for wrapped sessions)
-- Session graveyard (top 5 by tokens, persistent leaderboard)
+- Graveyard (top 5 cats by tokens, persistent leaderboard)
 - Context bar (vertical fill indicator, auto-detects 1M context models)
 
 ```bash
@@ -115,7 +115,7 @@ Brief face flashes from events. The cat holds the expression, then goes back to 
 
 ### Local data
 
-Session data is stored in `~/.claude-cat/`:
+All local data lives in `~/.claude-cat/`:
 - `registry.json` -- cat identity (name, color, approve mode, stats). Pruned after 30 days of inactivity.
 - `graveyard.json` -- top 5 cats by total tokens (persistent leaderboard).
 - `state/` -- ephemeral state files and `.out` tee files for active sessions.
@@ -159,7 +159,7 @@ Zero dependencies. Python 3.9+. macOS and Linux only.
 
 ```bash
 clat uninstall
-python3 -m pip uninstall claude-cat
+pip uninstall claude-cat
 rm -rf ~/.claude-cat
 ```
 
