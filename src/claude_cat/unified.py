@@ -80,6 +80,8 @@ class UnifiedMode:
         self.term_w = 80
         self.pty_rows = 16
         self.pty_cols = 80
+        self.last_pty_output = 0.0  # timestamp of last PTY output (for idle detection)
+        self.dashboard_dirty = True  # needs redraw
 
     # ── Terminal setup ──────────────────────────────────────────────
 
@@ -267,7 +269,7 @@ class UnifiedMode:
 
         if data == b"\x1c":  # Ctrl+backslash
             self.prefix_mode = True
-            self._render_dashboard()  # show prefix indicator
+            self._render_dashboard(force=True)
             return
 
         # Normal mode: passthrough to active cat
@@ -315,12 +317,12 @@ class UnifiedMode:
                 registry_flush_force()
         elif ch in (b"q", b"Q"):
             self.running = False
-        self._render_dashboard()
+        self._render_dashboard(force=True)
 
     def _start_name_prompt(self):
         self.name_prompt = True
         self.name_buffer = ""
-        self._render_dashboard()
+        self._render_dashboard(force=True)
 
     def _handle_name_input(self, data):
         for b in data:
@@ -339,13 +341,13 @@ class UnifiedMode:
             elif ch == b"\x1b" or ch == b"\x03":
                 self.name_prompt = False
                 self.name_buffer = ""
-                self._render_dashboard()
+                self._render_dashboard(force=True)
                 return
             elif ch in (b"\x7f", b"\x08"):
                 self.name_buffer = self.name_buffer[:-1]
             elif b >= 32:
                 self.name_buffer += chr(b)
-        self._render_dashboard()
+        self._render_dashboard(force=True)
 
     # ── Hook processing ─────────────────────────────────────────────
 
@@ -405,12 +407,15 @@ class UnifiedMode:
 
     # ── Dashboard rendering ─────────────────────────────────────────
 
-    def _render_dashboard(self):
-        """Render compact dashboard below the scroll region."""
-        out = ""
-        # Save cursor position (inside Claude Code's area)
-        out += "\033[s"
+    def _render_dashboard(self, force=False):
+        """Render compact dashboard below the scroll region.
+        Only renders when PTY has been quiet for 200ms+ to avoid cursor collision."""
+        now = time.time()
+        if not force and not self.name_prompt and not self.prefix_mode:
+            if now - self.last_pty_output < 0.2:
+                return  # Claude Code is actively outputting, skip
 
+        out = ""
         dash_start = self.pty_rows + 1
         now = time.time()
 
@@ -502,14 +507,14 @@ class UnifiedMode:
         # Clear remaining dashboard lines
         out += CSI + "%d;1H" % (dash_start + 7) + CSI + "K"
 
-        # Re-assert scroll region (safety)
+        # Re-assert scroll region and move cursor back into Claude Code's area
         out += CSI + "1;%dr" % self.pty_rows
-
-        # Restore cursor
-        out += "\033[u"
+        # Move cursor to bottom of scroll region (where Claude Code's prompt likely is)
+        out += CSI + "%d;1H" % self.pty_rows
 
         sys.stdout.write(out)
         sys.stdout.flush()
+        self.dashboard_dirty = False
 
     # ── SIGWINCH ────────────────────────────────────────────────────
 
@@ -524,7 +529,7 @@ class UnifiedMode:
                     os.kill(mc.child_pid, signal.SIGWINCH)
                 except OSError:
                     pass
-        self._render_dashboard()
+        self._render_dashboard(force=True)
 
     # ── Main loop ───────────────────────────────────────────────────
 
@@ -538,9 +543,9 @@ class UnifiedMode:
             cat_id = self.spawn_cat(name, resume_sid=resume_sid)
             self.active_cat_id = cat_id
 
-        self._render_dashboard()
+        self._render_dashboard(force=True)
 
-        last_dashboard = 0.0
+        last_dashboard = time.time()
         last_hook_scan = 0.0
 
         try:
@@ -584,14 +589,16 @@ class UnifiedMode:
                             # Relay active cat's output to stdout
                             if mc.cat_id == self.active_cat_id:
                                 os.write(self.stdout_fd, data)
+                                self.last_pty_output = now
+                                self.dashboard_dirty = True
                             # Buffer for replay on switch
                             mc.replay_buf = (mc.replay_buf + data)[-4096:]
                         except OSError:
                             mc.alive = False
                             mc.dead_since = now
 
-                # Periodic: dashboard refresh
-                if now - last_dashboard > 0.5:
+                # Dashboard refresh: only when PTY is idle (200ms+ silence)
+                if self.dashboard_dirty and now - last_dashboard > 0.5:
                     self._render_dashboard()
                     last_dashboard = now
 
@@ -604,6 +611,10 @@ class UnifiedMode:
                 # Reap dead children
                 self._reap_children()
                 self._cleanup_dead()
+
+                # If no cats, always keep dashboard visible
+                if not self.cats:
+                    self.dashboard_dirty = True
 
         finally:
             # Kill all children
